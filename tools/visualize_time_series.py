@@ -2,15 +2,15 @@
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from data.pixelwise_dataset import PixelwiseDataset
+from data.patchwise_dataset import PatchwiseDataset
 
-path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data/tmp_train.h5"
+path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data/tmp2_train.h5"
 
-ds = PixelwiseDataset(path)
+ds = PatchwiseDataset(path, pixelwise=True)
 
 dataloader = DataLoader(
     ds,
-    batch_size=6,
+    batch_size=128,
     shuffle=True,
 )
 dataloader_iter = iter(dataloader)
