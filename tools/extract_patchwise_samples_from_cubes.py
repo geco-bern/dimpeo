@@ -1,5 +1,6 @@
 import glob
 import os
+import argparse
 
 import h5py
 import numpy as np
@@ -232,7 +233,16 @@ def extract_samples_from_cubes(root_dir):
 
 
 if __name__ == "__main__":
-    root_dir = (
-        "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data"
+    # root_dir = (
+    #     "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data"
+    # )
+
+    parser = argparse.ArgumentParser(description="Extract patchwise samples from cubes")
+    parser.add_argument(
+        "--root_dir",
+        type=str,
+        help="Root directory containing the datacubes",
     )
-    extract_samples_from_cubes(root_dir)
+    args = parser.parse_args()
+
+    extract_samples_from_cubes(args.root_dir)
