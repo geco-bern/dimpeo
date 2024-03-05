@@ -179,10 +179,6 @@ def extract_samples_from_cubes(root_dir):
 
 
 if __name__ == "__main__":
-    # root_dir = (
-    #     "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data"
-    # )
-
     parser = argparse.ArgumentParser(description="Extract patchwise samples from cubes")
     parser.add_argument(
         "--root_dir",

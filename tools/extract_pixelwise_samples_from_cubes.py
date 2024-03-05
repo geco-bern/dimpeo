@@ -1,7 +1,7 @@
+import argparse
 import glob
 import os
 import random
-import argparse
 
 import h5py
 import numpy as np
@@ -333,10 +333,6 @@ def extract_samples_from_cubes(root_dir):
 
 
 if __name__ == "__main__":
-    # root_dir = (
-    #     "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data"
-    # )
-
     parser = argparse.ArgumentParser(description="Extract pixelwise samples from cubes")
     parser.add_argument(
         "--root_dir",

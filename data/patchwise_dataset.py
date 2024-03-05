@@ -23,11 +23,9 @@ class PatchwiseDataset(torch.utils.data.Dataset):
         self.spatiotemporal_features = spatiotemporal_features
         self.spatial_features = spatial_features
 
-        # self.labels = []
         self.spatiotemporal_dataset = None
         self.spatial_dataset = None
 
-        # Initial check (or for caching)
         with h5py.File(self.file_path, "r") as file:
             if self.pixelwise:
                 self.dataset_len = len(file.get("meta/valid_pixel_idx"))
@@ -46,7 +44,6 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             self.spatial_dataset = file.get("spatial")
             if self.pixelwise:
                 self.valid_pixel_idx = file.get("meta/valid_pixel_idx")
-            # self.labels = data.get("labels")
 
         if self.pixelwise:
             img_idx, height_idx, width_idx = self.valid_pixel_idx[index]
@@ -78,7 +75,6 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             )
         data = {"spatiotemporal": st_data, "spatial": s_data}
 
-        # label = self.labels[index]
         for t in self.transforms:
             data = t(data)
 
