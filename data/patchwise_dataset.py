@@ -16,9 +16,11 @@ class PatchwiseDataset(torch.utils.data.Dataset):
         spatiotemporal_features: List[str] = ["s2_ndvi"],
         spatial_features: List[str] = ["slope", "easting", "twi"],
         pixelwise: bool = False,
+        annual: bool = False,
     ) -> None:
         self.file_path = path
         self.pixelwise = pixelwise
+        self.annual = annual
         self.transforms = transforms
         self.spatiotemporal_features = spatiotemporal_features
         self.spatial_features = spatial_features
@@ -28,9 +30,15 @@ class PatchwiseDataset(torch.utils.data.Dataset):
 
         with h5py.File(self.file_path, "r") as file:
             if self.pixelwise:
-                self.dataset_len = len(file.get("meta/valid_pixel_idx"))
+                if self.annual:
+                    self.dataset_len = len(file.get("meta/annual_pixel_idx"))
+                else:
+                    self.dataset_len = len(file.get("meta/pixel_idx"))
             else:
-                self.dataset_len = len(file.get("temporal/time"))
+                if self.annual:
+                    self.dataset_len = len(file.get("meta/annual_idx"))
+                else:
+                    self.dataset_len = len(file.get("temporal/time"))
 
     def __getitem__(self, index):
         # https://discuss.pytorch.org/t/dataloader-when-num-worker-0-there-is-bug/25643/16?fbclid=IwAR2jFrRkKXv4PL9urrZeiHT_a3eEn7eZDWjUaQ-zcLP6BRtMO7e0nMgwlKU
@@ -43,36 +51,88 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             self.spatiotemporal_dataset = file.get("spatiotemporal")
             self.spatial_dataset = file.get("spatial")
             if self.pixelwise:
-                self.valid_pixel_idx = file.get("meta/valid_pixel_idx")
+                if self.annual:
+                    self.annual_pixel_idx = file.get("meta/annual_pixel_idx")
+                else:
+                    self.pixel_idx = file.get("meta/pixel_idx")
+            else:
+                if self.annual:
+                    self.annual_idx = file.get("meta/annual_idx")
 
         if self.pixelwise:
-            img_idx, height_idx, width_idx = self.valid_pixel_idx[index]
-            st_data = np.stack(
-                [
-                    self.spatiotemporal_dataset[n][img_idx, height_idx, width_idx]
-                    for n in self.spatiotemporal_features
-                ],
-                axis=-1,
-            )
-            s_data = np.stack(
-                [
-                    self.spatial_dataset[n][img_idx, height_idx, width_idx]
-                    for n in self.spatial_features
-                ],
-                axis=-1,
-            )
+            # will return samples in the following format:
+            # spatiotemporal: B x T x C
+            # spatial: B x C
+            if self.annual:
+                img_idx, height_idx, width_idx, start_t_idx, end_t_idx = (
+                    self.annual_pixel_idx[index]
+                )
+                st_data = np.stack(
+                    [
+                        self.spatiotemporal_dataset[n][
+                            img_idx, start_t_idx : end_t_idx + 1, height_idx, width_idx
+                        ]
+                        for n in self.spatiotemporal_features
+                    ],
+                    axis=-1,
+                )
+                s_data = np.stack(
+                    [
+                        self.spatial_dataset[n][img_idx, height_idx, width_idx]
+                        for n in self.spatial_features
+                    ],
+                    axis=-1,
+                )
+            else:
+
+                img_idx, height_idx, width_idx = self.pixel_idx[index]
+                st_data = np.stack(
+                    [
+                        self.spatiotemporal_dataset[n][
+                            img_idx, :, height_idx, width_idx
+                        ]
+                        for n in self.spatiotemporal_features
+                    ],
+                    axis=-1,
+                )
+                s_data = np.stack(
+                    [
+                        self.spatial_dataset[n][img_idx, height_idx, width_idx]
+                        for n in self.spatial_features
+                    ],
+                    axis=-1,
+                )
         else:
-            st_data = np.stack(
-                [
-                    self.spatiotemporal_dataset[n][index]
-                    for n in self.spatiotemporal_features
-                ],
-                axis=-1,
-            )
-            s_data = np.stack(
-                [self.spatial_dataset[n][index] for n in self.spatial_features],
-                axis=-1,
-            )
+            # will return samples in the following format:
+            # spatiotemporal: B x T x H x W x C
+            # spatial: B x H x W x C
+            if self.annual:
+                img_idx, start_t_idx, end_t_idx = self.annual_idx[index]
+                st_data = np.stack(
+                    [
+                        self.spatiotemporal_dataset[n][
+                            img_idx, start_t_idx : end_t_idx + 1
+                        ]
+                        for n in self.spatiotemporal_features
+                    ],
+                    axis=-1,
+                )
+                s_data = np.stack(
+                    [self.spatial_dataset[n][img_idx] for n in self.spatial_features],
+                    axis=-1,
+                )
+            else:
+                st_data = np.stack(
+                    [
+                        self.spatiotemporal_dataset[n][index]
+                        for n in self.spatiotemporal_features
+                    ],
+                    axis=-1,
+                )
+                s_data = np.stack(
+                    [self.spatial_dataset[n][index] for n in self.spatial_features],
+                    axis=-1,
+                )
         data = {"spatiotemporal": st_data, "spatial": s_data}
 
         for t in self.transforms:
@@ -82,3 +142,15 @@ class PatchwiseDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return self.dataset_len
+
+    def inspect_file(self):
+        def scan_node(g, tabs=0):
+            print(" " * tabs, g.name)
+            for v in g.values():
+                if isinstance(v, h5py.Dataset):
+                    print(" " * tabs + " " * 2 + " -", v.name)
+                elif isinstance(v, h5py.Group):
+                    scan_node(v, tabs=tabs + 2)
+
+        with h5py.File(self.file_path, "r") as f:
+            scan_node(f)

@@ -4,9 +4,9 @@ from torch.utils.data import DataLoader
 
 from data.patchwise_dataset import PatchwiseDataset
 
-path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data/tmp3_train.h5"
+path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data/tmp4_train.h5"
 
-ds = PatchwiseDataset(path, pixelwise=True)
+ds = PatchwiseDataset(path, pixelwise=True, annual=True)
 
 dataloader = DataLoader(
     ds,
@@ -20,7 +20,7 @@ dataloader_iter = iter(dataloader)
 plot_idx = 0
 # get random samples
 dd = next(dataloader_iter)
-dst = dd['spatiotemporal']
+dst = dd["spatiotemporal"]
 fig, ax = plt.subplots(2, 6, figsize=(15, 6), sharey=True)
 # plotting NDVI
 ax[0, 0].plot(dst[0, :, plot_idx])
