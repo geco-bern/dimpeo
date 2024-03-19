@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Callable, List, Union
 
 import h5py
@@ -27,6 +28,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
 
         self.spatiotemporal_dataset = None
         self.spatial_dataset = None
+        self.temporal_dataset = None
 
         with h5py.File(self.file_path, "r") as file:
             if self.pixelwise:
@@ -50,6 +52,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             file = h5py.File(self.file_path, "r")
             self.spatiotemporal_dataset = file.get("spatiotemporal")
             self.spatial_dataset = file.get("spatial")
+            self.temporal_dataset = file.get("temporal")
             if self.pixelwise:
                 if self.annual:
                     self.annual_pixel_idx = file.get("meta/annual_pixel_idx")
@@ -122,18 +125,24 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     axis=-1,
                 )
             else:
+                img_idx = index
                 st_data = np.stack(
                     [
-                        self.spatiotemporal_dataset[n][index]
+                        self.spatiotemporal_dataset[n][img_idx]
                         for n in self.spatiotemporal_features
                     ],
                     axis=-1,
                 )
                 s_data = np.stack(
-                    [self.spatial_dataset[n][index] for n in self.spatial_features],
+                    [self.spatial_dataset[n][img_idx] for n in self.spatial_features],
                     axis=-1,
                 )
-        data = {"spatiotemporal": st_data, "spatial": s_data}
+        dgs = self.convert_date_to_dgs(self.temporal_dataset["time"][img_idx])
+        data = {
+            "spatiotemporal": st_data,
+            "spatial": s_data,
+            "dgs": dgs,
+        }
 
         for t in self.transforms:
             data = t(data)
@@ -154,3 +163,13 @@ class PatchwiseDataset(torch.utils.data.Dataset):
 
         with h5py.File(self.file_path, "r") as f:
             scan_node(f)
+
+    @staticmethod
+    def convert_date_to_dgs(dates):
+        return np.array(
+            [
+                datetime.strptime(d[:10], "%Y-%m-%d").timetuple().tm_yday
+                for d in dates.astype("U29")
+            ],
+            dtype=int,
+        )

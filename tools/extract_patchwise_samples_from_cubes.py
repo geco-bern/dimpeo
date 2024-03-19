@@ -12,7 +12,7 @@ FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
 DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
 H = 128
 W = 128
-T = 201
+T = 437
 
 
 def create_h5(file, key, data, shape, dtype):
@@ -190,7 +190,7 @@ def extract_samples_from_cubes(root_dir):
     else:
         search_cube = glob.glob(os.path.join(root_dir, "cubes", "*[!_raw].nc"))
 
-    with h5py.File(os.path.join(root_dir, "tmp4_{}.h5".format(SPLIT)), "a") as h5_file:
+    with h5py.File(os.path.join(root_dir, "tmp_{}.h5".format(SPLIT)), "a") as h5_file:
 
         for cube_name in search_cube:
             cube = xr.open_dataset(os.path.join(root_dir, cube_name), engine="h5netcdf")
