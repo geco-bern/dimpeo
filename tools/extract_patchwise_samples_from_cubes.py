@@ -1,15 +1,24 @@
 import argparse
 import glob
 import os
+import time
 
 import h5py
 import numpy as np
 import xarray as xr
 
+from data.cloud_cleaning import smooth_s2_timeseries
+
 SPLIT = "train"
-USE_RAW = False
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
-DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
+CLOUD_CLEANING = True
+MAX_NAN = 36
+REMOVE_PCT = 0.05
+SMOOTHER = "lowess"
+LOWESS_FRAC = 0.07
+SG_WINDOW_LENGTH = 15
+SG_POLYORDER = 2
+# DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
 H = 128
 W = 128
 T = 437
@@ -42,6 +51,48 @@ def save_to_h5(
     # TODO: double check data types --> compression
     # TODO: auto-chunking is enabled due to compression, adapt chunk size?
 
+    # Cloud cleaning
+    if CLOUD_CLEANING:
+        cube = smooth_s2_timeseries(
+            cube,
+            MAX_NAN,
+            REMOVE_PCT,
+            SMOOTHER,
+            LOWESS_FRAC,
+            SG_WINDOW_LENGTH,
+            SG_POLYORDER,
+        )
+        print("Performed cloud cleaning")
+    else:
+        # Set to_sample = 1 everywhere if cloud cleaning is not performed
+        ones_dataarray = xr.DataArray(
+            np.ones((len(cube.lat), len(cube.lon))), dims=("lat", "lon")
+        )
+        cube["to_sample"] = ones_dataarray
+
+    # Deal with NaNs (or -9999)
+    # For era5 linear interpolation
+    cube_tmp = cube[[name for name in list(cube.variables) if name.startswith("era5")]]
+    if np.isnan(cube_tmp.to_array()).any():
+        cube[[name for name in list(cube.variables) if name.startswith("era5")]] = cube[
+            [name for name in list(cube.variables) if name.startswith("era5")]
+        ].interpolate_na(dim="time", method="linear")
+    # For static layers to average in space
+    variables_to_fill = [
+        name
+        for name in list(cube.variables)
+        if not name.startswith("era5")
+        and not name.startswith("s2")
+        and name not in ["time", "lat", "lon", "to_sample"]
+    ]
+    cube_tmp = cube[variables_to_fill]
+    cube_tmp = cube_tmp.where(cube_tmp != -9999, np.nan)
+    if np.isnan(cube_tmp.to_array()).any():
+        mean = cube_tmp[variables_to_fill].mean().to_array().values
+        for i, v in enumerate(variables_to_fill):
+            cube[v].fillna(mean[i])
+    print("Dealt with missing values")
+
     valid_mask = (
         cube.FOREST_MASK.values > FOREST_THRESH
     ) & cube.to_sample.values.astype(bool)
@@ -62,6 +113,9 @@ def save_to_h5(
         s2_ndvi = np.array(cube.s2_ndvi.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x T x H x W
+        s2_raw_ndvi = np.array(cube.s2_raw_ndvi.values, dtype=np.float32)[
+            np.newaxis, ...
+        ]  # shape: 1 x T x H x W
         slope = np.array(cube.slope.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x H x W
@@ -78,9 +132,11 @@ def save_to_h5(
         latitude = np.array(cube.lat.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x H
-        drought_mask = np.array(cube.DROUGHT_MASK.values > DROUGHT_THRESH, dtype=bool)[
+        drought_mask = np.array(cube.DROUGHT_MASK.values)[
             np.newaxis, ...
         ]  # shape: 1 x H x W
+        drought_mask[drought_mask == -9999] = 255
+        drought_mask = drought_mask.astype(np.uint8)
         height_idx, width_idx = np.indices(valid_mask.shape)
         sel_height_idx = height_idx[valid_mask]
         sel_width_idx = width_idx[valid_mask]
@@ -125,10 +181,13 @@ def save_to_h5(
             create_h5(h5_file, "spatiotemporal/s2_B04", s2_b04, (T, H, W), "float32")
             create_h5(h5_file, "spatiotemporal/s2_B08", s2_b08, (T, H, W), "float32")
             create_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi, (T, H, W), "float32")
+            create_h5(
+                h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi, (T, H, W), "float32"
+            )
             create_h5(h5_file, "spatial/slope", slope, (H, W), "float32")
             create_h5(h5_file, "spatial/easting", easting, (H, W), "float32")
             create_h5(h5_file, "spatial/twi", twi, (H, W), "float32")
-            create_h5(h5_file, "spatial/drought_mask", drought_mask, (H, W), "bool")
+            create_h5(h5_file, "spatial/drought_mask", drought_mask, (H, W), "uint8")
             create_h5(h5_file, "spatial/valid_mask", valid_mask, (H, W), "bool")
             create_h5(h5_file, "temporal/time", time, (T,), "S29")
             create_h5(
@@ -167,6 +226,7 @@ def save_to_h5(
             append_h5(h5_file, "spatiotemporal/s2_B04", s2_b04)
             append_h5(h5_file, "spatiotemporal/s2_B08", s2_b08)
             append_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi)
+            append_h5(h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi)
             append_h5(h5_file, "spatial/slope", slope)
             append_h5(h5_file, "spatial/easting", easting)
             append_h5(h5_file, "spatial/twi", twi)
@@ -185,20 +245,24 @@ def extract_samples_from_cubes(root_dir):
     Generate h5 file for a split.
     """
 
-    if USE_RAW:
-        search_cube = glob.glob(os.path.join(root_dir, "cubes", "*_raw.nc"))
-    else:
-        search_cube = glob.glob(os.path.join(root_dir, "cubes", "*[!_raw].nc"))
+    search_cube = glob.glob(os.path.join(root_dir, "cubes", "*_raw.nc"))
 
-    with h5py.File(os.path.join(root_dir, "tmp_{}.h5".format(SPLIT)), "a") as h5_file:
+    with h5py.File(os.path.join(root_dir, "tmp7_{}.h5".format(SPLIT)), "a") as h5_file:
 
         for cube_name in search_cube:
-            cube = xr.open_dataset(os.path.join(root_dir, cube_name), engine="h5netcdf")
+            start = time.time()
+            # cube = xr.open_dataset(os.path.join(root_dir, cube_name), engine="h5netcdf")
+            cube = xr.open_dataset(
+                os.path.join(root_dir, cube_name),
+                engine="h5netcdf",
+            )
             print("Generating samples from loaded cube {}...".format(cube_name))
             save_to_h5(
                 h5_file,
                 cube,
             )
+            end = time.time()
+            print("time: ", end - start)
 
 
 if __name__ == "__main__":
