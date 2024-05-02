@@ -42,6 +42,8 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                 else:
                     self.dataset_len = len(file.get("temporal/time"))
 
+        self.original_indices = np.arange(self.dataset_len)
+
     def __getitem__(self, index):
         # https://discuss.pytorch.org/t/dataloader-when-num-worker-0-there-is-bug/25643/16?fbclid=IwAR2jFrRkKXv4PL9urrZeiHT_a3eEn7eZDWjUaQ-zcLP6BRtMO7e0nMgwlKU
         # Why fill dataset at getitem rather than init?
@@ -62,13 +64,16 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                 if self.annual:
                     self.annual_idx = file.get("meta/annual_idx")
 
+
+        sel_index = self.original_indices[self.subset_indices[index]]
+
         if self.pixelwise:
             # will return samples in the following format:
             # spatiotemporal: B x T x C
             # spatial: B x C
             if self.annual:
                 img_idx, height_idx, width_idx, start_t_idx, end_t_idx = (
-                    self.annual_pixel_idx[index]
+                    self.annual_pixel_idx[sel_index]
                 )
                 st_data = np.stack(
                     [
@@ -88,7 +93,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                 )
             else:
 
-                img_idx, height_idx, width_idx = self.pixel_idx[index]
+                img_idx, height_idx, width_idx = self.pixel_idx[sel_index]
                 st_data = np.stack(
                     [
                         self.spatiotemporal_dataset[n][
@@ -110,7 +115,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             # spatiotemporal: B x T x H x W x C
             # spatial: B x H x W x C
             if self.annual:
-                img_idx, start_t_idx, end_t_idx = self.annual_idx[index]
+                img_idx, start_t_idx, end_t_idx = self.annual_idx[sel_index]
                 st_data = np.stack(
                     [
                         self.spatiotemporal_dataset[n][
@@ -125,7 +130,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     axis=-1,
                 )
             else:
-                img_idx = index
+                img_idx = sel_index
                 st_data = np.stack(
                     [
                         self.spatiotemporal_dataset[n][img_idx]
@@ -173,3 +178,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             ],
             dtype=int,
         )
+    
+    def update_indices(self, new_indices):
+        self.subset_indices = new_indices
+        self.dataset_len = len(new_indices)
