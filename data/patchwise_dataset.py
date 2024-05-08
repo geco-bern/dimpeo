@@ -18,6 +18,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
         spatial_features: List[str] = ["slope", "easting", "twi"],
         pixelwise: bool = False,
         annual: bool = False,
+        loc: bool = False,
     ) -> None:
         self.file_path = path
         self.pixelwise = pixelwise
@@ -29,6 +30,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
         self.spatiotemporal_dataset = None
         self.spatial_dataset = None
         self.temporal_dataset = None
+        self.loc = loc
 
         with h5py.File(self.file_path, "r") as file:
             if self.pixelwise:
@@ -63,8 +65,10 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             else:
                 if self.annual:
                     self.annual_idx = file.get("meta/annual_idx")
-
-
+            if self.loc:
+                self.lon = file.get("meta/longitude")
+                self.lat = file.get("meta/latitude")
+                
         sel_index = self.original_indices[self.subset_indices[index]]
 
         if self.pixelwise:
@@ -110,6 +114,8 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     ],
                     axis=-1,
                 )
+            lon = self.lon[img_idx, width_idx]
+            lat = self.lat[img_idx, height_idx]
         else:
             # will return samples in the following format:
             # spatiotemporal: B x T x H x W x C
@@ -142,11 +148,17 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     [self.spatial_dataset[n][img_idx] for n in self.spatial_features],
                     axis=-1,
                 )
+            lon = self.lon[img_idx, :]
+            lat = self.lat[img_idx, :]
+
         dgs = self.convert_date_to_dgs(self.temporal_dataset["time"][img_idx])
+
         data = {
             "spatiotemporal": st_data,
             "spatial": s_data,
             "dgs": dgs,
+            "lon": lon,
+            "lat": lat,
         }
 
         for t in self.transforms:
