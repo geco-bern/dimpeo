@@ -45,6 +45,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     self.dataset_len = len(file.get("temporal/time"))
 
         self.original_indices = np.arange(self.dataset_len)
+        self.subset_indices = self.original_indices
 
     def __getitem__(self, index):
         # https://discuss.pytorch.org/t/dataloader-when-num-worker-0-there-is-bug/25643/16?fbclid=IwAR2jFrRkKXv4PL9urrZeiHT_a3eEn7eZDWjUaQ-zcLP6BRtMO7e0nMgwlKU
