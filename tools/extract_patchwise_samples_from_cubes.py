@@ -54,6 +54,7 @@ def check_missing_timestamps(cube, max_conseq_dates=2):
     missing_dates = []
     current_timestamp = timestamps[0]
     last_timestamp = timestamps[-1]
+    nr_conseq_dates_max = 0
 
     while current_timestamp < last_timestamp:
         # Check for presence of next timestamp at 5 days interval
