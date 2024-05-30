@@ -22,16 +22,18 @@ SG_POLYORDER = 2
 H = 128
 W = 128
 T = 438
+ST_CHUNK_SIZE = (1, T, 4, 4)
+S_CHUNK_SIZE = (1, 128, 128)
 
 
-def create_h5(file, key, data, shape, dtype):
+def create_h5(file, key, data, shape, dtype, chunk_size=None):
     file.create_dataset(
         key,
         data=data,
         maxshape=(None, *shape),
         dtype=dtype,
-        compression="gzip",
-        compression_opts=9,
+        compression="lzf",
+        chunks=chunk_size,
     )
 
 
@@ -89,6 +91,8 @@ def save_to_h5(
     if missing_dates:
         print(f"Inserting missing timestamps: {missing_dates}")
         cube = cube.reindex(time=np.sort(np.concatenate([cube.time.values, missing_dates])))
+        if not CLOUD_CLEANING:
+            cube["s2_ndvi"] = cube["s2_ndvi"].interpolate_na(dim="time", method="linear")
 
     # Cloud cleaning
     if CLOUD_CLEANING:
@@ -216,21 +220,21 @@ def save_to_h5(
         annual_idx = np.stack((sel_img_idx, min_t_idx, max_t_idx), axis=1)  # Y x 3
 
         if not "spatiotemporal" in h5_file.keys():
-            create_h5(h5_file, "spatiotemporal/s2_B02", s2_b02, (T, H, W), "float32")
-            create_h5(h5_file, "spatiotemporal/s2_B03", s2_b03, (T, H, W), "float32")
-            create_h5(h5_file, "spatiotemporal/s2_B04", s2_b04, (T, H, W), "float32")
-            create_h5(h5_file, "spatiotemporal/s2_B08", s2_b08, (T, H, W), "float32")
-            create_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi, (T, H, W), "float32")
+            create_h5(h5_file, "spatiotemporal/s2_B02", s2_b02, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_B03", s2_b03, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_B04", s2_b04, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_B08", s2_b08, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi, (T, H, W), "float32", ST_CHUNK_SIZE)
             if CLOUD_CLEANING:
                 create_h5(
-                    h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi, (T, H, W), "float32"
+                    h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi, (T, H, W), "float32", ST_CHUNK_SIZE
                 )
-            create_h5(h5_file, "spatial/slope", slope, (H, W), "float32")
-            create_h5(h5_file, "spatial/easting", easting, (H, W), "float32")
-            create_h5(h5_file, "spatial/twi", twi, (H, W), "float32")
-            create_h5(h5_file, "spatial/drought_mask", drought_mask, (H, W), "uint8")
-            create_h5(h5_file, "spatial/valid_mask", valid_mask, (H, W), "bool")
-            create_h5(h5_file, "temporal/time", time, (T,), "S29")
+            create_h5(h5_file, "spatial/slope", slope, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/easting", easting, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/twi", twi, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/drought_mask", drought_mask, (H, W), "uint8", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/valid_mask", valid_mask, (H, W), "bool", S_CHUNK_SIZE)
+            create_h5(h5_file, "temporal/time", time, (T,), "S29", (1, T))
             create_h5(
                 h5_file, "meta/longitude", longitude, (longitude.shape[1],), "float32"
             )
