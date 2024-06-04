@@ -69,7 +69,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             if self.loc:
                 self.lon = file.get("meta/longitude")
                 self.lat = file.get("meta/latitude")
-                
+
         sel_index = self.original_indices[self.subset_indices[index]]
 
         if self.pixelwise:
@@ -115,8 +115,9 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     ],
                     axis=-1,
                 )
-            lon = self.lon[img_idx, width_idx]
-            lat = self.lat[img_idx, height_idx]
+            if self.loc:
+                lon = self.lon[img_idx, width_idx]
+                lat = self.lat[img_idx, height_idx]
         else:
             # will return samples in the following format:
             # spatiotemporal: B x T x H x W x C
@@ -149,18 +150,16 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     [self.spatial_dataset[n][img_idx] for n in self.spatial_features],
                     axis=-1,
                 )
-            lon = self.lon[img_idx, :]
-            lat = self.lat[img_idx, :]
+            if self.loc:
+                lon = self.lon[img_idx, :]
+                lat = self.lat[img_idx, :]
 
         dgs = self.convert_date_to_dgs(self.temporal_dataset["time"][img_idx])
 
-        data = {
-            "spatiotemporal": st_data,
-            "spatial": s_data,
-            "dgs": dgs,
-            "lon": lon,
-            "lat": lat,
-        }
+        data = {"spatiotemporal": st_data, "spatial": s_data, "dgs": dgs}
+        if self.loc:
+            data["lon"] = lon
+            data["lat"] = lat
 
         for t in self.transforms:
             data = t(data)
@@ -191,7 +190,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             ],
             dtype=int,
         )
-    
+
     def update_indices(self, new_indices):
         self.subset_indices = new_indices
         self.dataset_len = len(new_indices)
