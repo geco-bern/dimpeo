@@ -8,7 +8,7 @@ from rpy2.robjects.packages import importr
 ks = importr("ks")
 
 
-def get_density_kde_npphen(ref, diag_bw=False):
+def get_density_kde_npphen(ref, diag_bw=True):
 
     with (ro.default_converter + numpy2ri.converter).context():
 

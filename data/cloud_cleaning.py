@@ -95,15 +95,22 @@ def remove_lower_pct_per_week(cube, pct):
     """
     For each pixel timeseries and each Sentinel-2 variable, find pct percentile per week of year and remove values below.
     """
-    s2_vars = [name for name in list(cube.variables) if name.startswith("s2")]
-    filtered_cloud = cube[s2_vars].where(cube.s2_mask == 0)
+    s2_raw_ndvi = cube["s2_ndvi"].copy(deep=True)
 
-    # Find lower 10% per week of year for each pixel
+    s2_vars = [name for name in list(cube.variables) if name.startswith("s2")]
+    filtered_cloud = cube[s2_vars].where(
+        (cube.s2_mask == 0) & cube.s2_SCL.isin([1, 2, 4, 5, 6, 7])
+    )
+
+    # Find lower X% per week of year for each pixel
     filtered_cloud["time"] = pd.to_datetime(filtered_cloud.time.values)
     filtered_ds = filtered_cloud.groupby(filtered_cloud.time.dt.isocalendar().week).map(
         partial(process_group, s2_vars=s2_vars, pct=pct)
     )
     cube[s2_vars] = filtered_ds
+
+    cube["s2_raw_ndvi"] = s2_raw_ndvi
+    cube["s2_cloud_cleaned_ndvi"] = cube["s2_ndvi"].copy(deep=True)
 
     return cube
 
@@ -312,8 +319,6 @@ def smooth_s2_timeseries(
         ):  # only smooth continuous variables
             # Select the variable
             variable = cube[variable_name]
-            if variable_name == "s2_ndvi":
-                cube["s2_raw_ndvi"] = variable
 
             # create padding months
             values = variable.values

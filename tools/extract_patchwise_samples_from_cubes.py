@@ -13,7 +13,7 @@ SPLIT = "train"
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
 CLOUD_CLEANING = True
 MAX_NAN = 36
-REMOVE_PCT = 0.05
+REMOVE_PCT = 0.0  #  0.05
 SMOOTHER = "lowess"
 LOWESS_FRAC = 0.07
 SG_WINDOW_LENGTH = 15
@@ -116,6 +116,11 @@ def save_to_h5(
         s2_raw_ndvi = np.array(cube.s2_raw_ndvi.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x T x H x W
+        s2_cloud_cleaned_ndvi = np.array(
+            cube.s2_cloud_cleaned_ndvi.values, dtype=np.float32
+        )[
+            np.newaxis, ...
+        ]  # shape: 1 x T x H x W
         slope = np.array(cube.slope.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x H x W
@@ -184,6 +189,13 @@ def save_to_h5(
             create_h5(
                 h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi, (T, H, W), "float32"
             )
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_cloud_cleaned_ndvi",
+                s2_cloud_cleaned_ndvi,
+                (T, H, W),
+                "float32",
+            )
             create_h5(h5_file, "spatial/slope", slope, (H, W), "float32")
             create_h5(h5_file, "spatial/easting", easting, (H, W), "float32")
             create_h5(h5_file, "spatial/twi", twi, (H, W), "float32")
@@ -227,6 +239,9 @@ def save_to_h5(
             append_h5(h5_file, "spatiotemporal/s2_B08", s2_b08)
             append_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi)
             append_h5(h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi)
+            append_h5(
+                h5_file, "spatiotemporal/s2_cloud_cleaned_ndvi", s2_cloud_cleaned_ndvi
+            )
             append_h5(h5_file, "spatial/slope", slope)
             append_h5(h5_file, "spatial/easting", easting)
             append_h5(h5_file, "spatial/twi", twi)
@@ -247,7 +262,7 @@ def extract_samples_from_cubes(root_dir):
 
     search_cube = glob.glob(os.path.join(root_dir, "cubes", "*_raw.nc"))
 
-    with h5py.File(os.path.join(root_dir, "tmp7_{}.h5".format(SPLIT)), "a") as h5_file:
+    with h5py.File(os.path.join(root_dir, "tmp9_{}.h5".format(SPLIT)), "a") as h5_file:
 
         for cube_name in search_cube:
             start = time.time()

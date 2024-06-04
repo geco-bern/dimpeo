@@ -10,6 +10,6 @@ setup(
     author_email="",
     # REPLACE WITH YOUR OWN GITHUB PROJECT LINK
     url="",
-    install_requires=["pytorch-lightning", "torchgeo"],
+    install_requires=["pytorch-lightning"],
     packages=find_packages(),
 )

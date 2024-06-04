@@ -87,7 +87,6 @@ class PatchwiseDataset(torch.utils.data.Dataset):
                     axis=-1,
                 )
             else:
-
                 img_idx, height_idx, width_idx = self.pixel_idx[index]
                 st_data = np.stack(
                     [

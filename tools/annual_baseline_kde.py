@@ -16,27 +16,79 @@ from density_estimation.kde_statsmodels import get_density_kde_statsmodels
 def fit_kde(file_path, kde_type="npphen"):
     ds = PatchwiseDataset(
         file_path,
-        pixelwise=True,
+        pixelwise=False,
         annual=False,
         spatiotemporal_features=["s2_ndvi"],
-        spatial_features=["drought_mask"],
+        spatial_features=["drought_mask", "valid_mask"],
     )
 
-    torch.manual_seed(0)
+    torch.manual_seed(1)
     loader = DataLoader(ds, batch_size=1, drop_last=True, shuffle=True)
+    loader_iter = iter(loader)
 
-    for idx, sample in enumerate(loader):
+    use_context = False
 
-        # if not sample["spatial"][0].item():
-        #     continue
+    while True:
 
-        ndvi = (sample["spatiotemporal"][0, :, 0] * 10000).to(int)  # T
-        dgs = sample["dgs"][0].to(int)  # T
-        dgs[dgs == 366] = 365  # to account for gap years
-        data = np.stack((dgs, ndvi), axis=1)
+        try:
+            sample = next(loader_iter)
+        except StopIteration:
+            # reinitialize data loader
+            loader_iter = iter(loader)
+            sample = next(loader_iter)
 
-        # take first year as test year
-        ano, ref = data[:73], data[73:]
+        if use_context:
+            # sample one pixel and its window
+            h, w = sample["spatiotemporal"].shape[2:4]
+            i = 0
+            while i < 100:
+                rh = torch.randint(low=1, high=h - 1, size=(1,)).item()
+                rw = torch.randint(low=1, high=w - 1, size=(1,)).item()
+                is_valid = sample["spatial"][0, rh - 1 : rh + 2, rw - 1 : rw + 2, 1]
+                if np.all(np.array(is_valid, dtype=bool)):
+                    break
+                i += 1
+            else:
+                print("couldn't find valid patch")
+                continue
+            ndvi = (
+                (
+                    sample["spatiotemporal"][0, :, rh - 1 : rh + 2, rw - 1 : rw + 2, 0]
+                    + 1
+                )
+                * 5000
+            ).to(
+                int
+            )  # T
+            ano_ndvi, ref_ndvi = ndvi[:73], ndvi[73:]
+            ano_ndvi = ano_ndvi[:, 1, 1]  # center pixel
+            ref_ndvi = np.reshape(ref_ndvi, -1)
+
+            dgs = sample["dgs"][0].to(int)  # T
+            dgs[dgs == 366] = 365  # to account for gap years
+            ano_dgs, ref_dgs = dgs[:73], dgs[73:]
+            ref_dgs = np.repeat(ref_dgs, 9)
+
+            ano = np.stack((ano_dgs, ano_ndvi), axis=1)
+            ref = np.stack((ref_dgs, ref_ndvi), axis=1)
+
+        else:
+            # sample one pixel
+            h, w = sample["spatiotemporal"].shape[2:4]
+            while True:
+                rh = torch.randint(h, size=(1,)).item()
+                rw = torch.randint(w, size=(1,)).item()
+                is_valid = sample["spatial"][0, rh, rw, 1]
+                if is_valid:
+                    break
+            ndvi = ((sample["spatiotemporal"][0, :, rh, rw, 0] + 1) * 5000).to(int)  # T
+            dgs = sample["dgs"][0].to(int)  # T
+            dgs[dgs == 366] = 365  # to account for gap years
+            data = np.stack((dgs, ndvi), axis=1)
+
+            # take first year as test year
+            ano, ref = data[:73], data[73:]
+            # ano, ref = data[-73:], data[:-73]
 
         ref = ref[~np.isnan(ref).any(axis=1)]  # remove rows with nan
         ano = ano[~np.isnan(ano).any(axis=1)]  # remove rows with nan
@@ -50,7 +102,7 @@ def fit_kde(file_path, kde_type="npphen"):
         elif kde_type == "sklearn":
             kernel_density = get_density_kde_sklearn(ref)
         elif kde_type == "rkde":
-            kernel_density = get_density_kde_rkde(ref)
+            kernel_density = get_density_kde_rkde(ref, type_rho="huber", periodic=True)
         else:
             raise ValueError
 
@@ -100,14 +152,17 @@ def fit_kde(file_path, kde_type="npphen"):
         fig, ax = plt.subplots(
             2, 1, figsize=(6, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1]}
         )
-        ax[0].set_ylim(0, 500)
         levels = [0, 0.5, 0.75, 0.9, 0.95]
         cfset = ax[0].contourf(xx, yy, rfd, levels=levels, cmap="hot", alpha=0.6)
         cset = ax[0].contour(xx, yy, rfd, levels=levels, colors="grey", linewidths=1)
         ax[0].clabel(cset, inline=1, fontsize=10)
         ax[0].plot(range(len(max_density)), max_density, c="darkred")
-        ax[0].set_yticks([0, 100, 200, 300, 400, 500])
-        ax[0].set_yticklabels([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        # ax[0].set_ylim(0, 500)
+        # ax[0].set_yticks([0, 100, 200, 300, 400, 500])
+        # ax[0].set_yticklabels([-1.0, -0.6, -0.2, 0.2, 0.6, 1.0])
+        ax[0].set_ylim(300, 500)
+        ax[0].set_yticks([300, 350, 400, 450, 500])
+        ax[0].set_yticklabels([0.2, 0.4, 0.6, 0.8, 1.0])
         ax[0].set_ylabel("NDVI")
         cbar = fig.colorbar(cfset)
         cbar.set_label("RFD")
@@ -130,7 +185,7 @@ def fit_kde(file_path, kde_type="npphen"):
         pos2 = ax[1].get_position()
         ax[1].set_position([pos.x0, pos2.y0, pos.width, pos2.height])
 
-        fig.suptitle("has_drought: {}".format(sample["spatial"][0].item()))
+        fig.suptitle("has_drought: {}".format(sample["spatial"][0, rh, rw, 0].item()))
 
         plt.show(block=False)
         input("Press key to continue...")
@@ -138,6 +193,6 @@ def fit_kde(file_path, kde_type="npphen"):
 
 
 if __name__ == "__main__":
-    path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive - epfl.ch/DIMPEO/data/tmp7_train.h5"
+    path = "/Volumes/Macintosh HD/Users/davidbruggemann/OneDrive/DIMPEO/data/tmp7_train.h5"
     kde_type = "rkde"
     fit_kde(path, kde_type=kde_type)
