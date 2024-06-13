@@ -9,15 +9,16 @@ import xarray as xr
 
 from data.cloud_cleaning import smooth_s2_timeseries
 
-SPLIT = "train"
+# SPLIT = "train"
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
-CLOUD_CLEANING = False
+CLOUD_CLEANING = True
 MAX_NAN = 36
 REMOVE_PCT = 0.0  #  0.05
 SMOOTHER = "lowess"
 LOWESS_FRAC = 0.07
 SG_WINDOW_LENGTH = 15
 SG_POLYORDER = 2
+SAVE_RAW = False
 # DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
 H = 128
 W = 128
@@ -43,7 +44,7 @@ def append_h5(file, key, data):
 
 
 def check_missing_timestamps(cube, max_conseq_dates=2):
-    """ Check for missing timestamps in cube.
+    """Check for missing timestamps in cube.
 
     Args:
         cube (xr.Dataset): Cube to check for missing timestamps.
@@ -60,11 +61,13 @@ def check_missing_timestamps(cube, max_conseq_dates=2):
 
     while current_timestamp < last_timestamp:
         # Check for presence of next timestamp at 5 days interval
-        expected_date = current_timestamp + np.timedelta64(5, 'D')
+        expected_date = current_timestamp + np.timedelta64(5, "D")
         if expected_date not in timestamps:
             missing_dates.append(expected_date)
             # Record number of consecutive missing timestamps
-            if len(missing_dates) > 1 and (missing_dates[-1] - missing_dates[-2]) == np.timedelta64(5, 'D'):
+            if len(missing_dates) > 1 and (
+                missing_dates[-1] - missing_dates[-2]
+            ) == np.timedelta64(5, "D"):
                 nr_conseq_dates_max += 1
             else:
                 nr_conseq_dates_max = 1
@@ -90,9 +93,13 @@ def save_to_h5(
     missing_dates = check_missing_timestamps(cube)
     if missing_dates:
         print(f"Inserting missing timestamps: {missing_dates}")
-        cube = cube.reindex(time=np.sort(np.concatenate([cube.time.values, missing_dates])))
+        cube = cube.reindex(
+            time=np.sort(np.concatenate([cube.time.values, missing_dates]))
+        )
         if not CLOUD_CLEANING:
-            cube["s2_ndvi"] = cube["s2_ndvi"].interpolate_na(dim="time", method="linear")
+            cube["s2_ndvi"] = cube["s2_ndvi"].interpolate_na(
+                dim="time", method="linear"
+            )
 
     # Cloud cleaning
     if CLOUD_CLEANING:
@@ -156,7 +163,7 @@ def save_to_h5(
         s2_ndvi = np.array(cube.s2_ndvi.values, dtype=np.float32)[
             np.newaxis, ...
         ]  # shape: 1 x T x H x W
-        if CLOUD_CLEANING:
+        if CLOUD_CLEANING and SAVE_RAW:
             s2_raw_ndvi = np.array(cube.s2_raw_ndvi.values, dtype=np.float32)[
                 np.newaxis, ...
             ]  # shape: 1 x T x H x W
@@ -225,14 +232,54 @@ def save_to_h5(
         annual_idx = np.stack((sel_img_idx, min_t_idx, max_t_idx), axis=1)  # Y x 3
 
         if not "spatiotemporal" in h5_file.keys():
-            create_h5(h5_file, "spatiotemporal/s2_B02", s2_b02, (T, H, W), "float32", ST_CHUNK_SIZE)
-            create_h5(h5_file, "spatiotemporal/s2_B03", s2_b03, (T, H, W), "float32", ST_CHUNK_SIZE)
-            create_h5(h5_file, "spatiotemporal/s2_B04", s2_b04, (T, H, W), "float32", ST_CHUNK_SIZE)
-            create_h5(h5_file, "spatiotemporal/s2_B08", s2_b08, (T, H, W), "float32", ST_CHUNK_SIZE)
-            create_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi, (T, H, W), "float32", ST_CHUNK_SIZE)
-            if CLOUD_CLEANING:
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_B02",
+                s2_b02,
+                (T, H, W),
+                "float32",
+                ST_CHUNK_SIZE,
+            )
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_B03",
+                s2_b03,
+                (T, H, W),
+                "float32",
+                ST_CHUNK_SIZE,
+            )
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_B04",
+                s2_b04,
+                (T, H, W),
+                "float32",
+                ST_CHUNK_SIZE,
+            )
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_B08",
+                s2_b08,
+                (T, H, W),
+                "float32",
+                ST_CHUNK_SIZE,
+            )
+            create_h5(
+                h5_file,
+                "spatiotemporal/s2_ndvi",
+                s2_ndvi,
+                (T, H, W),
+                "float32",
+                ST_CHUNK_SIZE,
+            )
+            if CLOUD_CLEANING and SAVE_RAW:
                 create_h5(
-                    h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi, (T, H, W), "float32", ST_CHUNK_SIZE
+                    h5_file,
+                    "spatiotemporal/s2_raw_ndvi",
+                    s2_raw_ndvi,
+                    (T, H, W),
+                    "float32",
+                    ST_CHUNK_SIZE,
                 )
                 create_h5(
                     h5_file,
@@ -240,13 +287,24 @@ def save_to_h5(
                     s2_cloud_cleaned_ndvi,
                     (T, H, W),
                     "float32",
-                    ST_CHUNK_SIZE
+                    ST_CHUNK_SIZE,
                 )
             create_h5(h5_file, "spatial/slope", slope, (H, W), "float32", S_CHUNK_SIZE)
-            create_h5(h5_file, "spatial/easting", easting, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(
+                h5_file, "spatial/easting", easting, (H, W), "float32", S_CHUNK_SIZE
+            )
             create_h5(h5_file, "spatial/twi", twi, (H, W), "float32", S_CHUNK_SIZE)
-            create_h5(h5_file, "spatial/drought_mask", drought_mask, (H, W), "uint8", S_CHUNK_SIZE)
-            create_h5(h5_file, "spatial/valid_mask", valid_mask, (H, W), "bool", S_CHUNK_SIZE)
+            create_h5(
+                h5_file,
+                "spatial/drought_mask",
+                drought_mask,
+                (H, W),
+                "uint8",
+                S_CHUNK_SIZE,
+            )
+            create_h5(
+                h5_file, "spatial/valid_mask", valid_mask, (H, W), "bool", S_CHUNK_SIZE
+            )
             create_h5(h5_file, "temporal/time", time, (T,), "S29", (1, T))
             create_h5(
                 h5_file, "meta/longitude", longitude, (longitude.shape[1],), "float32"
@@ -284,10 +342,12 @@ def save_to_h5(
             append_h5(h5_file, "spatiotemporal/s2_B04", s2_b04)
             append_h5(h5_file, "spatiotemporal/s2_B08", s2_b08)
             append_h5(h5_file, "spatiotemporal/s2_ndvi", s2_ndvi)
-            if CLOUD_CLEANING:
+            if CLOUD_CLEANING and SAVE_RAW:
                 append_h5(h5_file, "spatiotemporal/s2_raw_ndvi", s2_raw_ndvi)
                 append_h5(
-                    h5_file, "spatiotemporal/s2_cloud_cleaned_ndvi", s2_cloud_cleaned_ndvi
+                    h5_file,
+                    "spatiotemporal/s2_cloud_cleaned_ndvi",
+                    s2_cloud_cleaned_ndvi,
                 )
             append_h5(h5_file, "spatial/slope", slope)
             append_h5(h5_file, "spatial/easting", easting)
@@ -302,21 +362,29 @@ def save_to_h5(
             append_h5(h5_file, "meta/annual_pixel_idx", annual_pixel_idx)
 
 
-def extract_samples_from_cubes(root_dir):
+def extract_samples_from_cubes(data_dir, save_dir):
     """
     Generate h5 file for a split.
     """
     if CLOUD_CLEANING:
-        search_cube = glob.glob(os.path.join(root_dir, "cubes", "*_raw.nc"))
+        search_cube = glob.glob(os.path.join(data_dir, "cubes", "*_raw.nc"))
     else:
-        search_cube = glob.glob(os.path.join(root_dir, "cubes", "*.nc"))
+        search_cube = glob.glob(os.path.join(data_dir, "cubes", "*.nc"))
 
-    with h5py.File(os.path.join(root_dir, "tmp9_{}.h5".format(SPLIT)), "a") as h5_file:
+    with h5py.File(
+        os.path.join(
+            save_dir,
+            "processed_maxnan{}_removepct{}_lowessfrac{}.h5".format(
+                MAX_NAN, REMOVE_PCT, LOWESS_FRAC
+            ),
+        ),
+        "a",
+    ) as h5_file:
 
         for cube_name in search_cube:
             start = time.time()
             cube = xr.open_dataset(
-                os.path.join(root_dir, cube_name),
+                os.path.join(data_dir, cube_name),
                 engine="h5netcdf",
             )
             print("Generating samples from loaded cube {}...".format(cube_name))
@@ -335,6 +403,11 @@ if __name__ == "__main__":
         type=str,
         help="Directory containing the datacubes",
     )
+    parser.add_argument(
+        "--save_dir",
+        type=str,
+        help="Directory to save h5",
+    )
     args = parser.parse_args()
 
-    extract_samples_from_cubes(args.data_dir)
+    extract_samples_from_cubes(args.data_dir, args.save_dir)
