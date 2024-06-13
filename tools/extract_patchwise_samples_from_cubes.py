@@ -22,9 +22,11 @@ SAVE_RAW = False
 # DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
 H = 128
 W = 128
-T = 438
+START_YEAR = 2018
+END_YEAR = 2023
+T = (END_YEAR - START_YEAR) * 73
 ST_CHUNK_SIZE = (1, T, 4, 4)
-S_CHUNK_SIZE = (1, 128, 128)
+S_CHUNK_SIZE = (1, H, W)
 
 
 def create_h5(file, key, data, shape, dtype, chunk_size=None):
@@ -55,10 +57,26 @@ def check_missing_timestamps(cube, max_conseq_dates=2):
     """
     timestamps = cube.time.values
     missing_dates = []
+
+    # beginning of 2017
+    current_timestamp = timestamps[0]
+    while (current_timestamp - np.timedelta64(5, "D")).astype("datetime64[Y]").astype(
+        int
+    ) + 1970 >= START_YEAR:
+        current_timestamp -= np.timedelta64(5, "D")
+        missing_dates.append(current_timestamp)
+
+    # end of 2023
+    current_timestamp = timestamps[-1]
+    while (current_timestamp + np.timedelta64(5, "D")).astype("datetime64[Y]").astype(
+        int
+    ) + 1970 <= END_YEAR:
+        current_timestamp += np.timedelta64(5, "D")
+        missing_dates.append(current_timestamp)
+
     current_timestamp = timestamps[0]
     last_timestamp = timestamps[-1]
     nr_conseq_dates_max = 0
-
     while current_timestamp < last_timestamp:
         # Check for presence of next timestamp at 5 days interval
         expected_date = current_timestamp + np.timedelta64(5, "D")
