@@ -24,7 +24,8 @@ H = 128
 W = 128
 START_YEAR = 2017
 END_YEAR = 2023
-T = (END_YEAR - START_YEAR + 1) * 73
+OBS_PER_YEAR = 73
+T = (END_YEAR - START_YEAR + 1) * OBS_PER_YEAR
 ST_CHUNK_SIZE = (1, T, 4, 4)
 S_CHUNK_SIZE = (1, H, W)
 
@@ -378,7 +379,8 @@ def save_to_h5(
             append_h5(h5_file, "meta/annual_idx", annual_idx)
             append_h5(h5_file, "meta/annual_pixel_idx", annual_pixel_idx)
 
-def add_to_h5(h5_file, cube):
+
+def add_features_to_h5(h5_file, cube):
     """
     Adds additional features of cube to hdf5 file.
     """
@@ -410,6 +412,25 @@ def add_to_h5(h5_file, cube):
         append_h5(h5_file, "spatial/dem", dem)
 
 
+def add_predictions_to_h5(h5_file, preds, dataset_name="anomalies_qrf_2018"):
+    """
+    Adds predictions for one year to hdf5 file.
+    """
+    if not "preds" in h5_file.keys():
+        h5_file.create_group("preds")
+    if dataset_name not in h5_file["preds"].keys():
+        create_h5(
+            h5_file,
+            f"preds/{dataset_name}",
+            preds,
+            (OBS_PER_YEAR, H, W),
+            "float32",
+            (1, OBS_PER_YEAR, H, W),
+        )
+    else:
+        append_h5(h5_file, f"preds/{dataset_name}", preds)
+
+
 def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
     """
     Generate h5 file for a split.
@@ -437,7 +458,7 @@ def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
             )
             print("Generating samples from loaded cube {}...".format(cube_name))
             if add_features:
-                add_to_h5(h5_file, cube)
+                add_features_to_h5(h5_file, cube)
             else:
                 save_to_h5(
                     h5_file,
