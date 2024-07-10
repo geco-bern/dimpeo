@@ -11,7 +11,7 @@ from data.cloud_cleaning import smooth_s2_timeseries
 
 # SPLIT = "train"
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
-CLOUD_CLEANING = True
+CLOUD_CLEANING = False
 MAX_NAN = 36
 REMOVE_PCT = 0.0  #  0.05
 SMOOTHER = "lowess"
@@ -24,7 +24,8 @@ H = 128
 W = 128
 START_YEAR = 2017
 END_YEAR = 2023
-T = (END_YEAR - START_YEAR + 1) * 73
+OBS_PER_YEAR = 73
+T = (END_YEAR - START_YEAR + 1) * OBS_PER_YEAR
 ST_CHUNK_SIZE = (1, T, 4, 4)
 S_CHUNK_SIZE = (1, H, W)
 
@@ -106,7 +107,6 @@ def save_to_h5(
     """
     # TODO: create train/val/test split
     # TODO: double check data types --> compression
-    # TODO: auto-chunking is enabled due to compression, adapt chunk size?
 
     missing_dates = check_missing_timestamps(cube)
     if missing_dates:
@@ -380,7 +380,58 @@ def save_to_h5(
             append_h5(h5_file, "meta/annual_pixel_idx", annual_pixel_idx)
 
 
-def extract_samples_from_cubes(data_dir, save_dir):
+def add_features_to_h5(h5_file, cube):
+    """
+    Adds additional features of cube to hdf5 file.
+    """
+
+    northing = np.array(cube.northing.values, dtype=np.float32)[
+            np.newaxis, ...
+        ]  # shape: 1 x H x W
+    rugg = np.array(cube.rugg.values, dtype=np.float32)[
+        np.newaxis, ...
+    ]  # shape: 1 x H x W
+    curv = np.array(cube.curv.values, dtype=np.float32)[
+        np.newaxis, ...
+    ]  # shape: 1 x H x W
+    dem = np.array(cube.DEM.values, dtype=np.float32)[
+        np.newaxis, ...
+    ]  # shape: 1 x H x W
+    
+    if "spatial/northing" not in h5_file.keys():
+        create_h5(
+            h5_file, "spatial/northing", northing, (H, W), "float32", S_CHUNK_SIZE
+        )
+        create_h5(h5_file, "spatial/rugg", rugg, (H, W), "float32", S_CHUNK_SIZE)
+        create_h5(h5_file, "spatial/curv", curv, (H, W), "float32", S_CHUNK_SIZE)
+        create_h5(h5_file, "spatial/dem", dem, (H, W), "float32", S_CHUNK_SIZE)
+    else:
+        append_h5(h5_file, "spatial/northing", northing)
+        append_h5(h5_file, "spatial/rugg", rugg)
+        append_h5(h5_file, "spatial/curv", curv)
+        append_h5(h5_file, "spatial/dem", dem)
+
+
+def add_predictions_to_h5(h5_file, preds, dataset_name="anomalies_qrf_2018"):
+    """
+    Adds predictions for one year to hdf5 file.
+    """
+    if not "preds" in h5_file.keys():
+        h5_file.create_group("preds")
+    if dataset_name not in h5_file["preds"].keys():
+        create_h5(
+            h5_file,
+            f"preds/{dataset_name}",
+            preds,
+            (OBS_PER_YEAR, H, W),
+            "float32",
+            (1, OBS_PER_YEAR, H, W),
+        )
+    else:
+        append_h5(h5_file, f"preds/{dataset_name}", preds)
+
+
+def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
     """
     Generate h5 file for a split.
     """
@@ -434,10 +485,10 @@ def extract_samples_from_cubes(data_dir, save_dir):
 
             print("Generating samples from loaded cube {}...".format(cube_name))
             try:
-                save_to_h5(
-                    h5_file,
-                    cube,
-                )
+                if add_features:
+                    add_features_to_h5(h5_file, cube)
+                else:
+                    save_to_h5(h5_file, cube)
             except KeyError:  # this happens when variables are missing
                 with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
                     f.write(os.path.basename(cube_name) + '\n')
@@ -464,6 +515,12 @@ if __name__ == "__main__":
         type=str,
         help="Directory to save h5",
     )
+    parser.add_argument(
+        "--add_features",
+        action="store_true",
+        default=False,
+        help="Add new features to existing h5 file",
+    )
     args = parser.parse_args()
 
-    extract_samples_from_cubes(args.data_dir, args.save_dir)
+    extract_samples_from_cubes(args.data_dir, args.save_dir, args.add_features)

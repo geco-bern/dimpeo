@@ -18,7 +18,7 @@ class PatchwiseDataset(torch.utils.data.Dataset):
         spatial_features: List[str] = ["slope", "easting", "twi"],
         pixelwise: bool = False,
         annual: bool = False,
-        loc: bool = False,
+        loc: bool = True,
     ) -> None:
         self.file_path = path
         self.pixelwise = pixelwise
@@ -69,6 +69,8 @@ class PatchwiseDataset(torch.utils.data.Dataset):
             if self.loc:
                 self.lon = file.get("meta/longitude")
                 self.lat = file.get("meta/latitude")
+            time = file.get("temporal/time")
+            self.time = np.array(time, dtype="datetime64")
 
         sel_index = self.original_indices[self.subset_indices[index]]
 
