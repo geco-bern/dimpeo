@@ -24,7 +24,7 @@ H = 128
 W = 128
 START_YEAR = 2017
 END_YEAR = 2023
-T = (END_YEAR - START_YEAR) * 73
+T = (END_YEAR - START_YEAR + 1) * 73
 ST_CHUNK_SIZE = (1, T, 4, 4)
 S_CHUNK_SIZE = (1, H, W)
 
@@ -389,6 +389,17 @@ def extract_samples_from_cubes(data_dir, save_dir):
     else:
         search_cube = glob.glob(os.path.join(data_dir, "cubes", "*.nc"))
 
+    extracted_filename = os.path.join(save_dir, "extracted_maxnan{}_removepct{}_lowessfrac{}.txt".format(MAX_NAN, REMOVE_PCT, LOWESS_FRAC))
+    if os.path.isfile(extracted_filename):
+        with open(extracted_filename, "r") as f:
+            extracted = f.read().splitlines()
+    else:
+        extracted = []
+
+    if os.path.isfile(os.path.join(save_dir, "failed_cubes.txt")):
+        with open(os.path.join(save_dir, "failed_cubes.txt"), "r") as f:
+            extracted.extend(f.read().splitlines())
+
     with h5py.File(
         os.path.join(
             save_dir,
@@ -400,18 +411,45 @@ def extract_samples_from_cubes(data_dir, save_dir):
     ) as h5_file:
 
         for cube_name in search_cube:
+            if os.path.basename(cube_name) in extracted:
+                print("Already extracted {}, skipping...".format(cube_name))
+                continue
+
+            # if os.path.basename(cube_name) in [  # invalid list
+            #     "2017_1_30_2023_12_30_8.532724933477382_46.35084937056722_128_128_raw.nc"
+            # ]:
+            #     continue
+
             start = time.time()
-            cube = xr.open_dataset(
-                os.path.join(data_dir, cube_name),
-                engine="h5netcdf",
-            )
+            try:
+                cube = xr.open_dataset(
+                    os.path.join(data_dir, cube_name),
+                    engine="h5netcdf",
+                )
+            except OSError:  # this happens when the cube is corrupt
+                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
+                    f.write(os.path.basename(cube_name) + '\n')
+                print("failed to read cube {}, skipping...".format(cube_name))
+                continue
+
             print("Generating samples from loaded cube {}...".format(cube_name))
-            save_to_h5(
-                h5_file,
-                cube,
-            )
+            try:
+                save_to_h5(
+                    h5_file,
+                    cube,
+                )
+            except KeyError:  # this happens when variables are missing
+                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
+                    f.write(os.path.basename(cube_name) + '\n')
+                print("could not find variables in cube {}, skipping...".format(cube_name))
+                continue
             end = time.time()
             print("time: ", end - start)
+
+            with open(os.path.join(save_dir, "extracted_maxnan{}_removepct{}_lowessfrac{}.txt".format(
+                        MAX_NAN, REMOVE_PCT, LOWESS_FRAC
+                    )), "a") as f:
+                f.write(os.path.basename(cube_name) + '\n')
 
 
 if __name__ == "__main__":
