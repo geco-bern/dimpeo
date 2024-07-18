@@ -134,6 +134,7 @@ def train():
 
     n_iterations = 0
     n_epochs = 0
+    stop = False
     while True:
         print("Starting epoch {}".format(n_epochs + 1))
         
