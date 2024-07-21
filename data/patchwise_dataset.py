@@ -54,22 +54,23 @@ class PatchwiseDataset(torch.utils.data.Dataset):
 
         # Each worker (which are forked after the init) need to have their own file handle
         if self.spatiotemporal_dataset is None:
-            file = h5py.File(self.file_path, "r")
-            self.spatiotemporal_dataset = file.get("spatiotemporal")
-            self.spatial_dataset = file.get("spatial")
-            self.temporal_dataset = file.get("temporal")
+            self.file = h5py.File(self.file_path, "r+")
+            self.spatiotemporal_dataset = self.file.get("spatiotemporal")
+            self.spatial_dataset = self.file.get("spatial")
+            self.temporal_dataset = self.file.get("temporal")
             if self.pixelwise:
                 if self.annual:
-                    self.annual_pixel_idx = file.get("meta/annual_pixel_idx")
+                    self.annual_pixel_idx = self.file.get("meta/annual_pixel_idx")
                 else:
-                    self.pixel_idx = file.get("meta/pixel_idx")
+                    self.pixel_idx = self.file.get("meta/pixel_idx")
+                self.drought_mask = self.file.get("spatiotemporal/drought_mask")
             else:
                 if self.annual:
-                    self.annual_idx = file.get("meta/annual_idx")
+                    self.annual_idx = self.file.get("meta/annual_idx")
             if self.loc:
-                self.lon = file.get("meta/longitude")
-                self.lat = file.get("meta/latitude")
-            time = file.get("temporal/time")
+                self.lon = self.file.get("meta/longitude")
+                self.lat = self.file.get("meta/latitude")
+            time = self.file.get("temporal/time")
             self.time = np.array(time, dtype="datetime64")
 
         sel_index = self.original_indices[self.subset_indices[index]]
