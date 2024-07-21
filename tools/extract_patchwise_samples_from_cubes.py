@@ -12,13 +12,13 @@ from data.cloud_cleaning import smooth_s2_timeseries
 # SPLIT = "train"
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel
 CLOUD_CLEANING = False
+SAVE_RAW = True
 MAX_NAN = 36
 REMOVE_PCT = 0.0  #  0.05
 SMOOTHER = "lowess"
 LOWESS_FRAC = 0.07
 SG_WINDOW_LENGTH = 15
 SG_POLYORDER = 2
-SAVE_RAW = False
 # DROUGHT_THRESH = 0.0  # threshold of drought to consider to sample pixel
 H = 128
 W = 128
@@ -114,10 +114,10 @@ def save_to_h5(
         cube = cube.reindex(
             time=np.sort(np.concatenate([cube.time.values, missing_dates]))
         )
-        if not CLOUD_CLEANING:
-            cube["s2_ndvi"] = cube["s2_ndvi"].interpolate_na(
-                dim="time", method="linear"
-            )
+        # if not CLOUD_CLEANING:
+        #     cube["s2_ndvi"] = cube["s2_ndvi"].interpolate_na(
+        #         dim="time", method="linear"
+        #     )
 
     # Cloud cleaning
     if CLOUD_CLEANING:
@@ -161,54 +161,41 @@ def save_to_h5(
             cube[v].fillna(mean[i])
     print("Dealt with missing values")
 
+    def get_array(cube, var_name, shape, dtype=np.float32):
+        return np.array(getattr(cube, var_name).values, dtype=dtype)[np.newaxis, ...]
+
     valid_mask = (
         cube.FOREST_MASK.values > FOREST_THRESH
     ) & cube.to_sample.values.astype(bool)
     # check if any valid pixels in patch
     if valid_mask.any():
-        s2_b02 = np.array(cube.s2_B02.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x T x H x W
-        s2_b03 = np.array(cube.s2_B03.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x T x H x W
-        s2_b04 = np.array(cube.s2_B04.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x T x H x W
-        s2_b08 = np.array(cube.s2_B08.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x T x H x W
-        s2_ndvi = np.array(cube.s2_ndvi.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x T x H x W
+        s2_b02 = get_array(cube, "s2_B02", (1, T, H, W))
+        s2_b03 = get_array(cube, "s2_B03", (1, T, H, W))
+        s2_b04 = get_array(cube, "s2_B04", (1, T, H, W))
+        s2_b08 = get_array(cube, "s2_B08", (1, T, H, W))
+        s2_ndvi = get_array(cube, "s2_ndvi", (1, T, H, W))
         if CLOUD_CLEANING and SAVE_RAW:
-            s2_raw_ndvi = np.array(cube.s2_raw_ndvi.values, dtype=np.float32)[
-                np.newaxis, ...
-            ]  # shape: 1 x T x H x W
-            s2_cloud_cleaned_ndvi = np.array(
-                cube.s2_cloud_cleaned_ndvi.values, dtype=np.float32
-            )[
-                np.newaxis, ...
-            ]  # shape: 1 x T x H x W
-        slope = np.array(cube.slope.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x H x W
-        easting = np.array(cube.easting.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x H x W
-        twi = np.array(cube.twi.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x H x W
-        time = np.array(cube.time.values, dtype="S29")[np.newaxis, ...]  # shape: 1 x T
-        longitude = np.array(cube.lon.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x W
-        latitude = np.array(cube.lat.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x H
-        drought_mask = np.array(cube.DROUGHT_MASK.values)[
-            np.newaxis, ...
-        ]  # shape: 1 x H x W
+            s2_raw_ndvi = get_array(cube, "s2_raw_ndvi", (1, T, H, W))
+            s2_cloud_cleaned_ndvi = get_array(
+                cube, "s2_cloud_cleaned_ndvi", (1, T, H, W)
+            )
+        slope = get_array(cube, "slope", (1, H, W))
+        easting = get_array(cube, "easting", (1, H, W))
+        twi = get_array(cube, "twi", (1, H, W))
+        northing = get_array(cube, "northing", (1, H, W))
+        rugg = get_array(cube, "rugg", (1, H, W))
+        curv = get_array(cube, "curv", (1, H, W))
+        dem = get_array(cube, "DEM", (1, H, W))
+        fc = get_array(cube, "FC", (1, H, W))
+        fh = get_array(cube, "FH", (1, H, W))
+        s2_mask = get_array(cube, "s2_mask", (1, T, H, W))
+        s2_scl = get_array(cube, "s2_SCL", (1, T, H, W))
+        s2_cloud_free_mask = (s2_mask == 0) & np.isin(s2_scl, [1, 2, 4, 5, 6, 7])
+        time = get_array(cube, "time", (1, T), "S29")
+        longitude = get_array(cube, "lon", (1, W))
+        latitude = get_array(cube, "lat", (1, H))
+        drought_mask = get_array(cube, "DROUGHT_MASK", (1, H, W), "uint8")
+
         drought_mask[drought_mask == -9999] = 255
         drought_mask = drought_mask.astype(np.uint8)
         height_idx, width_idx = np.indices(valid_mask.shape)
@@ -307,11 +294,22 @@ def save_to_h5(
                     "float32",
                     ST_CHUNK_SIZE,
                 )
+            create_h5(h5_file, "spatiotemporal/s2_mask", s2_mask, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_scl", s2_scl, (T, H, W), "float32", ST_CHUNK_SIZE)
+            create_h5(h5_file, "spatiotemporal/s2_cloud_free_mask", s2_cloud_free_mask, (T, H, W), "float32", ST_CHUNK_SIZE)
             create_h5(h5_file, "spatial/slope", slope, (H, W), "float32", S_CHUNK_SIZE)
             create_h5(
                 h5_file, "spatial/easting", easting, (H, W), "float32", S_CHUNK_SIZE
             )
             create_h5(h5_file, "spatial/twi", twi, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(
+                h5_file, "spatial/northing", northing, (H, W), "float32", S_CHUNK_SIZE
+            )
+            create_h5(h5_file, "spatial/rugg", rugg, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/curv", curv, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/dem", dem, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/fc", fc, (H, W), "float32", S_CHUNK_SIZE)
+            create_h5(h5_file, "spatial/fh", fh, (H, W), "float32", S_CHUNK_SIZE)
             create_h5(
                 h5_file,
                 "spatial/drought_mask",
@@ -367,9 +365,18 @@ def save_to_h5(
                     "spatiotemporal/s2_cloud_cleaned_ndvi",
                     s2_cloud_cleaned_ndvi,
                 )
+            append_h5(h5_file, "spatiotemporal/s2_mask", s2_mask)
+            append_h5(h5_file, "spatiotemporal/s2_scl", s2_scl)
+            append_h5(h5_file, "spatiotemporal/s2_cloud_free_mask", s2_cloud_free_mask)
             append_h5(h5_file, "spatial/slope", slope)
             append_h5(h5_file, "spatial/easting", easting)
             append_h5(h5_file, "spatial/twi", twi)
+            append_h5(h5_file, "spatial/northing", northing)
+            append_h5(h5_file, "spatial/rugg", rugg)
+            append_h5(h5_file, "spatial/curv", curv)
+            append_h5(h5_file, "spatial/dem", dem)
+            append_h5(h5_file, "spatial/fc", fc)
+            append_h5(h5_file, "spatial/fh", fh)
             append_h5(h5_file, "spatial/drought_mask", drought_mask)
             append_h5(h5_file, "spatial/valid_mask", valid_mask)
             append_h5(h5_file, "temporal/time", time)
@@ -380,36 +387,56 @@ def save_to_h5(
             append_h5(h5_file, "meta/annual_pixel_idx", annual_pixel_idx)
 
 
-def add_features_to_h5(h5_file, cube):
-    """
-    Adds additional features of cube to hdf5 file.
-    """
+# def add_features_to_h5(h5_file, cube):
+#     """
+#     Adds additional features of cube to hdf5 file.
+#     """
 
-    northing = np.array(cube.northing.values, dtype=np.float32)[
-            np.newaxis, ...
-        ]  # shape: 1 x H x W
-    rugg = np.array(cube.rugg.values, dtype=np.float32)[
-        np.newaxis, ...
-    ]  # shape: 1 x H x W
-    curv = np.array(cube.curv.values, dtype=np.float32)[
-        np.newaxis, ...
-    ]  # shape: 1 x H x W
-    dem = np.array(cube.DEM.values, dtype=np.float32)[
-        np.newaxis, ...
-    ]  # shape: 1 x H x W
-    
-    if "spatial/northing" not in h5_file.keys():
-        create_h5(
-            h5_file, "spatial/northing", northing, (H, W), "float32", S_CHUNK_SIZE
-        )
-        create_h5(h5_file, "spatial/rugg", rugg, (H, W), "float32", S_CHUNK_SIZE)
-        create_h5(h5_file, "spatial/curv", curv, (H, W), "float32", S_CHUNK_SIZE)
-        create_h5(h5_file, "spatial/dem", dem, (H, W), "float32", S_CHUNK_SIZE)
-    else:
-        append_h5(h5_file, "spatial/northing", northing)
-        append_h5(h5_file, "spatial/rugg", rugg)
-        append_h5(h5_file, "spatial/curv", curv)
-        append_h5(h5_file, "spatial/dem", dem)
+#     missing_dates = check_missing_timestamps(cube)
+#     if missing_dates:
+#         print(f"Inserting missing timestamps: {missing_dates}")
+#         cube = cube.reindex(
+#             time=np.sort(np.concatenate([cube.time.values, missing_dates]))
+#         )
+
+#     def get_array(cube, var_name, shape, dtype=np.float32):
+#         try:
+#             return np.array(getattr(cube, var_name).values, dtype=dtype)[np.newaxis, ...]
+#         except (KeyError, AttributeError):
+#             return np.full(shape, np.nan, dtype=dtype)
+
+#     northing = get_array(cube, 'northing', (1, H, W))
+#     rugg = get_array(cube, 'rugg', (1, H, W))
+#     curv = get_array(cube, 'curv', (1, H, W))
+#     dem = get_array(cube, 'DEM', (1, H, W))
+#     fc = get_array(cube, 'FC', (1, H, W))
+#     fh = get_array(cube, 'FH', (1, H, W))
+#     s2_mask = get_array(cube, 's2_mask', (1, T, H, W))
+#     s2_scl = get_array(cube, 's2_SCL', (1, T, H, W))
+#     s2_cloud_free_mask = (s2_mask == 0) & np.isin(s2_scl, [1, 2, 4, 5, 6, 7])
+
+#     if "spatial/northing" not in h5_file.keys():
+#         create_h5(
+#             h5_file, "spatial/northing", northing, (H, W), "float32", S_CHUNK_SIZE
+#         )
+#         create_h5(h5_file, "spatial/rugg", rugg, (H, W), "float32", S_CHUNK_SIZE)
+#         create_h5(h5_file, "spatial/curv", curv, (H, W), "float32", S_CHUNK_SIZE)
+#         create_h5(h5_file, "spatial/dem", dem, (H, W), "float32", S_CHUNK_SIZE)
+#         create_h5(h5_file, "spatial/fc", fc, (H, W), "float32", S_CHUNK_SIZE)
+#         create_h5(h5_file, "spatial/fh", fh, (H, W), "float32", S_CHUNK_SIZE)
+#         create_h5(h5_file, "spatiotemporal/s2_mask", s2_mask, (T, H, W), "float32", ST_CHUNK_SIZE)
+#         create_h5(h5_file, "spatiotemporal/s2_scl", s2_scl, (T, H, W), "float32", ST_CHUNK_SIZE)
+#         create_h5(h5_file, "spatiotemporal/s2_cloud_free_mask", s2_cloud_free_mask, (T, H, W), "float32", ST_CHUNK_SIZE)
+#     else:
+#         append_h5(h5_file, "spatial/northing", northing)
+#         append_h5(h5_file, "spatial/rugg", rugg)
+#         append_h5(h5_file, "spatial/curv", curv)
+#         append_h5(h5_file, "spatial/dem", dem)
+#         append_h5(h5_file, "spatial/fc", fc)
+#         append_h5(h5_file, "spatial/fh", fh)
+#         append_h5(h5_file, "spatiotemporal/s2_mask", s2_mask)
+#         append_h5(h5_file, "spatiotemporal/s2_scl", s2_scl)
+#         append_h5(h5_file, "spatiotemporal/s2_cloud_free_mask", s2_cloud_free_mask)
 
 
 def add_predictions_to_h5(h5_file, preds, dataset_name="anomalies_qrf_2018"):
@@ -435,34 +462,38 @@ def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
     """
     Generate h5 file for a split.
     """
-    if CLOUD_CLEANING:
+    if CLOUD_CLEANING or SAVE_RAW:
         search_cube = glob.glob(os.path.join(data_dir, "cubes", "*_raw.nc"))
     else:
         search_cube = glob.glob(os.path.join(data_dir, "cubes", "*.nc"))
 
-    extracted_filename = os.path.join(save_dir, "extracted_maxnan{}_removepct{}_lowessfrac{}.txt".format(MAX_NAN, REMOVE_PCT, LOWESS_FRAC))
+    extracted_filename = os.path.join(save_dir, "extracted_maxnan{}_removepct{}.txt".format(MAX_NAN, REMOVE_PCT))
     if os.path.isfile(extracted_filename):
         with open(extracted_filename, "r") as f:
             extracted = f.read().splitlines()
     else:
         extracted = []
 
-    if os.path.isfile(os.path.join(save_dir, "failed_cubes.txt")):
-        with open(os.path.join(save_dir, "failed_cubes.txt"), "r") as f:
+    # only add features for already extracted cubes
+    if add_features:
+        search_cube = [os.path.join(data_dir, "cubes", name) for name in extracted]
+
+    if os.path.isfile(os.path.join(save_dir, "failed_cubes_2.txt")):
+        with open(os.path.join(save_dir, "failed_cubes_2.txt"), "r") as f:
             extracted.extend(f.read().splitlines())
 
     with h5py.File(
         os.path.join(
             save_dir,
-            "processed_maxnan{}_removepct{}_lowessfrac{}.h5".format(
-                MAX_NAN, REMOVE_PCT, LOWESS_FRAC
+            "processed_maxnan{}_removepct{}.h5".format(
+                MAX_NAN, REMOVE_PCT
             ),
         ),
         "a",
     ) as h5_file:
 
         for cube_name in search_cube:
-            if os.path.basename(cube_name) in extracted:
+            if os.path.basename(cube_name) in extracted and not add_features:
                 print("Already extracted {}, skipping...".format(cube_name))
                 continue
 
@@ -478,7 +509,7 @@ def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
                     engine="h5netcdf",
                 )
             except OSError:  # this happens when the cube is corrupt
-                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
+                with open(os.path.join(save_dir, "failed_cubes_2.txt"), "a") as f:
                     f.write(os.path.basename(cube_name) + '\n')
                 print("failed to read cube {}, skipping...".format(cube_name))
                 continue
@@ -489,18 +520,23 @@ def extract_samples_from_cubes(data_dir, save_dir, add_features=False):
                     add_features_to_h5(h5_file, cube)
                 else:
                     save_to_h5(h5_file, cube)
-            except KeyError:  # this happens when variables are missing
-                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
-                    f.write(os.path.basename(cube_name) + '\n')
+            except (KeyError, AttributeError, IndexError):  # this happens when variables are missing
+                with open(os.path.join(save_dir, "failed_cubes_2.txt"), "a") as f:
+                    if not add_features:
+                        failed_text = os.path.basename(cube_name) + '\n'
+                    else:
+                        failed_text = os.path.basename(cube_name) + ' (add_features)\n'
+                    f.write(failed_text)
                 print("could not find variables in cube {}, skipping...".format(cube_name))
                 continue
             end = time.time()
             print("time: ", end - start)
-
-            with open(os.path.join(save_dir, "extracted_maxnan{}_removepct{}_lowessfrac{}.txt".format(
-                        MAX_NAN, REMOVE_PCT, LOWESS_FRAC
-                    )), "a") as f:
-                f.write(os.path.basename(cube_name) + '\n')
+            
+            if not add_features:
+                with open(os.path.join(save_dir, "extracted_maxnan{}_removepct{}.txt".format(
+                            MAX_NAN, REMOVE_PCT
+                        )), "a") as f:
+                    f.write(os.path.basename(cube_name) + '\n')
 
 
 if __name__ == "__main__":
