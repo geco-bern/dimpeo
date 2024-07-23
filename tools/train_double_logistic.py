@@ -14,7 +14,6 @@ from model.mlp import MLP
 PATH = "/data_1/scratch_1/processed/nn_dataset.h5"
 YEARS_IN_TRAIN = 6  # first six years in train, last year in test
 SPLIT_IDX = 73 * YEARS_IN_TRAIN
-BATCH_SIZE = 256
 
 
 class H5Dataset():
@@ -88,6 +87,7 @@ def train():
     max_iterations = 250000
     lr = 0.001
     lr_decay_rate = 0.1
+    batch_size = 256
     device = 'cuda'
 
     # rescale target
@@ -99,7 +99,7 @@ def train():
     # load avg missingness as a function of DOY (73 entries in total)
     missingness = torch.from_numpy(ds.missingness).to(device)
     # TODO: profiling to determine num_workers
-    loader = DataLoader(ds, batch_size=256, drop_last=True, shuffle=True, num_workers=32)
+    loader = DataLoader(ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32)
 
     # rescale input (stats obtained from full dataset)
     MEANS = torch.tensor([
@@ -125,10 +125,13 @@ def train():
         1.861385,  # twi
         ]).to(device).unsqueeze(0)
 
+    # this model has ~470k parameters
     encoder = MLP(d_in=9, d_out=12, n_blocks=8, d_block=256, dropout=0, skip_connection=True).to(device)
     # we don't care about overfitting --> no weight decay
     optimizer = torch.optim.Adam(encoder.parameters(), lr=lr)
 
+    # in total we have 20314711 pixels, with 6 parameters per pixel
+    # so technically the data has ~120 Mio degrees of freedom
     print("Number of parameters: {}".format(sum(p.numel() for p in encoder.parameters() if p.requires_grad)))
     print("Starting training...")
 
@@ -152,14 +155,14 @@ def train():
             doy_train, doy_test = doy[:, :SPLIT_IDX], doy[:, SPLIT_IDX:]
             nan_mask_train, nan_mask_test = nan_mask[:, :SPLIT_IDX], nan_mask[:, SPLIT_IDX:]
 
-            # impute possible missing values in fc with mean
-            inp = torch.nan_to_num(inp, nan=43.102547)
-
             # TODO: add positional encoding
 
             inp = inp.float().to(device)  # B x 9
             # standardize input
             inp = (inp - MEANS) / STDS
+
+            # impute possible missing values with mean (should be the case only for fc)
+            inp = torch.nan_to_num(inp, nan=0.0)
 
             t_ndvi_train = ndvi_train.float().to(device) * NDVI_SCALE
             t_doy_train = doy_train.float().to(device) * T_SCALE
@@ -185,7 +188,6 @@ def train():
 
             optimizer.zero_grad()
             loss.backward()
-            # torch.nn.utils.clip_grad_value_(encoder.parameters(), 1)
             optimizer.step()
 
             # update lr
@@ -193,7 +195,7 @@ def train():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = new_lrate
 
-            if (n_iterations + 1) % 100 == 0:
+            if (n_iterations + 1) % 500 == 0:
                 writer.add_scalar("Loss/train", loss, n_iterations)
                 for pi, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar("LearningRate[{}]".format(pi), param_group['lr'], n_iterations)
@@ -206,7 +208,7 @@ def train():
                     ndvi_lower = double_logistic_function(t_fit * T_SCALE, paramsl.cpu()) / NDVI_SCALE
                     ndvi_upper = double_logistic_function(t_fit * T_SCALE, paramsu.cpu()) / NDVI_SCALE
 
-                    random_indices = np.random.choice(np.arange(BATCH_SIZE), size=4, replace=False)
+                    random_indices = np.random.choice(np.arange(batch_size), size=4, replace=False)
                     for pl_idx, bi in enumerate(random_indices):
 
                         row, col = divmod(pl_idx, 2)
