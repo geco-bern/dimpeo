@@ -13,7 +13,7 @@ START_YEAR = 2017
 END_YEAR = 2023
 T = (END_YEAR - START_YEAR + 1) * 73
 
-save_dir = "/data_1/scratch_1/dbrueggemann"
+save_dir = "/data_1/scratch_1/processed"
 cubes = glob.glob("/data_2/dimpeo/cubes/*_raw.nc")
 
 def cartesian_product(a, b):
@@ -35,12 +35,14 @@ def append_h5(file, key, data):
     file[key][-data.shape[0] :] = data
 
 
-with h5py.File(os.path.join(save_dir, "qforest_dataset_full.h5"), "w") as h5_file:
+with h5py.File(os.path.join(save_dir, "nn_dataset_v2.h5"), "w") as h5_file:
     for i, c in enumerate(cubes):
 
         try:
             minicube = xr.open_dataset(c, engine="h5netcdf")
         except OSError:
+            with open(os.path.join(save_dir, "failed_cubes_nn.txt"), "a") as f:
+                f.write(os.path.basename(c) + '\n')
             continue
 
         missing_dates = check_missing_timestamps(minicube, START_YEAR, END_YEAR)
@@ -52,6 +54,8 @@ with h5py.File(os.path.join(save_dir, "qforest_dataset_full.h5"), "w") as h5_fil
         try:
             s2_cube = minicube.s2_ndvi.where((minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])).values
         except AttributeError:
+            with open(os.path.join(save_dir, "failed_cubes_nn.txt"), "a") as f:
+                f.write(os.path.basename(c) + '\n')
             continue
         s2_mask = (minicube.FOREST_MASK.values > 0.8)
         
@@ -69,6 +73,8 @@ with h5py.File(os.path.join(save_dir, "qforest_dataset_full.h5"), "w") as h5_fil
         easting = np.expand_dims(minicube.easting.values[s2_mask], axis=1)
         northing = np.expand_dims(minicube.northing.values[s2_mask], axis=1)
         twi = np.expand_dims(minicube.twi.values[s2_mask], axis=1)
+        rugg = np.expand_dims(minicube.rugg.values[s2_mask], axis=1)
+        curv = np.expand_dims(minicube.curv.values[s2_mask], axis=1)
 
         N = pixels.shape[0]
 
@@ -140,6 +146,20 @@ with h5py.File(os.path.join(save_dir, "qforest_dataset_full.h5"), "w") as h5_fil
             )
             create_h5(
                 h5_file,
+                "rugg",
+                rugg,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "curv",
+                curv,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
                 "doy",
                 doy,
                 (T,),
@@ -155,6 +175,8 @@ with h5py.File(os.path.join(save_dir, "qforest_dataset_full.h5"), "w") as h5_fil
             append_h5(h5_file, "easting", easting)
             append_h5(h5_file, "northing", northing)
             append_h5(h5_file, "twi", twi)
+            append_h5(h5_file, "rugg", rugg)
+            append_h5(h5_file, "curv", curv)
             append_h5(h5_file, "doy", doy)
 
         if i % 100 == 0:
