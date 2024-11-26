@@ -5,13 +5,15 @@ from scipy.interpolate import griddata
 from pyproj import Transformer
 import zarr
 import os
+import shutil
 
 
 def create_reference_raster(filepath, channels, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
     """
     Create a reference raster with given dimensions and transformation.
     """
-    # bounds are the corner points: left, bottom, right, top
+    # bounds are outside CH extreme points: left, bottom, right, top
+    # source: https://de.wikipedia.org/wiki/Geographische_Extrempunkte_der_Schweiz
     width = (bounds[2] - bounds[0]) // res
     height = (bounds[3] - bounds[1]) // res
 
@@ -60,7 +62,7 @@ def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, reference_ras
 
     # Interpolate the patch data to fit the reference raster grid
     for i in range(patch.shape[2]):
-        resampled_patch = griddata(src_points, patch_values[:, i], dst_points, method='nearest').reshape(subraster.shape[:2])
+        resampled_patch = griddata(src_points, patch_values[:, i], dst_points, method='linear').reshape(subraster.shape[:2])
         # Add resampled patch to reference raster
         subraster[..., i] += np.nan_to_num(resampled_patch)
         subraster_count[..., i] += ~np.isnan(resampled_patch)
@@ -108,7 +110,7 @@ def correct_overlap(filepath):
         data[:, :, c] = np.divide(data[:, :, c], count[:, :, c], out=np.full((data.attrs["height"], data.attrs["width"]), fill_value=np.nan), where=count[:, :, c] != 0)
 
     del count
-    os.remove(filepath.replace(".zarr", "_count.zarr"))
+    shutil.rmtree(filepath.replace(".zarr", "_count.zarr"))
 
 
 if __name__ == "__main__":
