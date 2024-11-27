@@ -5,7 +5,6 @@ from scipy.interpolate import griddata
 from pyproj import Transformer
 import zarr
 import os
-import shutil
 
 
 def create_reference_raster(filepath, channels, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
@@ -19,12 +18,28 @@ def create_reference_raster(filepath, channels, res=20, bounds=(2484000, 1075000
 
     transform = from_origin(bounds[0], bounds[3], res, res)
 
-    raster_zarr = open_zarr(height, width, channels, transform, filepath, bounds=bounds, fill_value=0, dtype="float32")
-    count_zarr = open_zarr(height, width, channels, transform, filepath.replace(".zarr", "_count.zarr"), bounds=bounds, fill_value=0, dtype="uint16")
-    return raster_zarr, count_zarr, transform
+    store = zarr.DirectoryStore(filepath)
+    root = zarr.group(store=store, overwrite=True)
 
+    root.create_dataset("reference_tmp", shape=(height, width, channels), fill_value=0, chunks=True, dtype="float32")
+    root.create_dataset("count_tmp", shape=(height, width, channels), fill_value=0, chunks=True, dtype="uint16")
 
-def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, reference_raster, count_raster, transform, subraster_margin=3, nx=128, ny=128):
+    final_zarr = root.create_dataset("data", shape=(height, width, channels), fill_value=0, chunks=True, dtype="float32")
+
+    # Add the metadata to the zarr file
+    final_zarr.attrs["_ARRAY_DIMENSIONS"] = ["x", "y", "z"]
+    final_zarr.attrs['width'] = width
+    final_zarr.attrs['height'] = height
+    final_zarr.attrs['count'] = channels
+    final_zarr.attrs['dtype'] = "float32"
+    final_zarr.attrs['bounds'] = bounds
+    final_zarr.attrs['transform'] = transform
+    final_zarr.attrs['crs'] = "EPSG:2056"
+
+    return root, transform
+    
+
+def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, group_zarr, transform, subraster_margin=3, nx=128, ny=128):
     """
     Project and resample patch onto the reference raster.
     """
@@ -53,6 +68,7 @@ def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, reference_ras
     max_j, max_i = int(max_j_dst) + subraster_margin, int(max_i_dst) + subraster_margin
     
     # Extract the subraster and corresponding coordinates
+    reference_raster, count_raster = group_zarr["reference_tmp"], group_zarr["count_tmp"]
     subraster = reference_raster[min_i:max_i, min_j:max_j, :]
     subraster_count = count_raster[min_i:max_i, min_j:max_j, :]
 
@@ -72,45 +88,25 @@ def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, reference_ras
     count_raster[min_i:max_i, min_j:max_j, :] = subraster_count
 
 
-def map_patches_to_raster(patches, coords, reference_raster, count_raster, transform):
+def map_patches_to_raster(patches, coords, group_zarr, transform):
     """
     Map patches onto the reference raster.
     """
     for patch, c in zip(patches, coords):
-        project_patch(c[0], c[1], c[2], c[3], patch, reference_raster, count_raster, transform)
+        project_patch(c[0], c[1], c[2], c[3], patch, group_zarr, transform)
 
 
-def open_zarr(height, width, channels, transform, filepath, bounds, fill_value=0, crs='EPSG:2056', dtype="float32"):
-    
-    zarray = zarr.open(
-            filepath,
-            mode='w',
-            shape=(height, width, channels),
-            fill_value=fill_value,
-            chunks=True,
-            dtype=dtype
-        )
-    
-    # Add the metadata to the zarr file
-    zarray.attrs['width'] = width
-    zarray.attrs['height'] = height
-    zarray.attrs['count'] = channels
-    zarray.attrs['dtype'] = dtype
-    zarray.attrs['bounds'] = bounds
-    zarray.attrs['transform'] = transform
-    zarray.attrs['crs'] = crs
-    return zarray
+def correct_overlap(group_zarr):
 
+    raster, count, final = group_zarr["reference_tmp"], group_zarr["count_tmp"], group_zarr["data"]
 
-def correct_overlap(filepath):
-    data = zarr.open(filepath)
-    count = zarr.open(filepath.replace(".zarr", "_count.zarr"))
+    for c in range(final.attrs["count"]):
+        final[:, :, c] = np.divide(raster[:, :, c], count[:, :, c], out=np.full((final.attrs["height"], final.attrs["width"]), fill_value=np.nan), where=count[:, :, c] != 0)
 
-    for c in range(data.attrs["count"]):
-        data[:, :, c] = np.divide(data[:, :, c], count[:, :, c], out=np.full((data.attrs["height"], data.attrs["width"]), fill_value=np.nan), where=count[:, :, c] != 0)
+    del group_zarr["reference_tmp"]
+    del group_zarr["count_tmp"]
 
-    del count
-    shutil.rmtree(filepath.replace(".zarr", "_count.zarr"))
+    zarr.consolidate_metadata(group_zarr.store)
 
 
 if __name__ == "__main__":
@@ -130,9 +126,9 @@ if __name__ == "__main__":
     print("Doing parameters")
     params = np.load(PARAMS_FILENAME)  # N x 128 x 128 x 6
     params_filename = os.path.join(out_path, "parameters.zarr")
-    reference_raster, count_raster, transform = create_reference_raster(filepath=params_filename, channels=params.shape[3])
-    map_patches_to_raster(params, coords, reference_raster, count_raster, transform)
-    correct_overlap(params_filename)
+    group_zarr, transform = create_reference_raster(filepath=params_filename, channels=params.shape[3])
+    map_patches_to_raster(params, coords, group_zarr, transform)
+    correct_overlap(group_zarr)
     del params
 
     # Anomalies next
@@ -140,6 +136,6 @@ if __name__ == "__main__":
     anoms = np.load(ANOMS_FILENAME)
     anoms = anoms.transpose(0, 2, 3, 1)  # N x 128 x 128 x 73
     anoms_filename = os.path.join(out_path, "anomalies.zarr")
-    reference_raster, count_raster, transform = create_reference_raster(filepath=anoms_filename, channels=anoms.shape[3])
-    map_patches_to_raster(anoms, coords, reference_raster, count_raster, transform)
-    correct_overlap(anoms_filename)
+    group_zarr, transform = create_reference_raster(filepath=anoms_filename, channels=anoms.shape[3])
+    map_patches_to_raster(anoms, coords, group_zarr, transform)
+    correct_overlap(group_zarr)
