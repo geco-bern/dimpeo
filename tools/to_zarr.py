@@ -1,13 +1,15 @@
+import shutil
 import numpy as np
-import rasterio
-from rasterio.transform import from_origin
 from scipy.interpolate import griddata
 from pyproj import Transformer
-import zarr
+import xarray as xr
+import dask.array
 import os
 
+from utils.helpers import check_missing_timestamps
 
-def create_reference_raster(filepath, channels, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
+
+def create_reference_raster(filepath, channel_name, channel_coords, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
     """
     Create a reference raster with given dimensions and transformation.
     """
@@ -16,30 +18,37 @@ def create_reference_raster(filepath, channels, res=20, bounds=(2484000, 1075000
     width = (bounds[2] - bounds[0]) // res
     height = (bounds[3] - bounds[1]) // res
 
-    transform = from_origin(bounds[0], bounds[3], res, res)
+    N_coords = np.linspace(bounds[3] - res // 2, bounds[1] + res // 2, height)
+    E_coords = np.linspace(bounds[0] + res // 2, bounds[2] - res // 2, width)
 
-    store = zarr.DirectoryStore(filepath)
-    root = zarr.group(store=store, overwrite=True)
+    reference_tmp = dask.array.zeros((len(channel_coords), height, width), dtype="float32", chunks=(20, 1800, 1800))
+    count_tmp = dask.array.zeros((len(channel_coords), height, width), dtype="uint16", chunks=(20, 1800, 1800))
+    forest_mask_tmp = dask.array.zeros((height, width), dtype="bool", chunks=(1800, 1800))
+    
+    ds = xr.Dataset(
+        {
+            "reference_tmp": ((channel_name, "N", "E"), reference_tmp),
+            "count_tmp": ((channel_name, "N", "E"), count_tmp),
+            "forest_mask": (("N", "E"), forest_mask_tmp)
+        },
+        coords={
+            channel_name: channel_coords,
+            "N": N_coords,
+            "E": E_coords,
+        },
+    )
 
-    root.create_dataset("reference_tmp", shape=(height, width, channels), fill_value=0, chunks=True, dtype="float32")
-    root.create_dataset("count_tmp", shape=(height, width, channels), fill_value=0, chunks=True, dtype="uint16")
+    ds.attrs["crs"] = "EPSG:2056"
+    ds.attrs["negative_anomaly_id"] = 0
+    ds.attrs["normal_id"] = 1
+    ds.attrs["positive_anomaly_id"] = 2
+    ds.attrs["missing_id"] = 255
 
-    final_zarr = root.create_dataset("data", shape=(height, width, channels), fill_value=0, chunks=True, dtype="float32")
-
-    # Add the metadata to the zarr file
-    final_zarr.attrs["_ARRAY_DIMENSIONS"] = ["x", "y", "z"]
-    final_zarr.attrs['width'] = width
-    final_zarr.attrs['height'] = height
-    final_zarr.attrs['count'] = channels
-    final_zarr.attrs['dtype'] = "float32"
-    final_zarr.attrs['bounds'] = bounds
-    final_zarr.attrs['transform'] = transform
-    final_zarr.attrs['crs'] = "EPSG:2056"
-
-    return root, transform
+    ds.to_zarr(filepath, compute=True)
+    return ds
     
 
-def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, group_zarr, transform, subraster_margin=3, nx=128, ny=128):
+def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mask, group_zarr, channel_name, subraster_margin=3, nx=128, ny=128):
     """
     Project and resample patch onto the reference raster.
     """
@@ -53,67 +62,92 @@ def project_patch(lon_left, lon_right, lat_bottom, lat_top, patch, group_zarr, t
     # Flatten the source grid and patch data for interpolation
     src_x, src_y = np.meshgrid(x_st, y_st)
     src_points = np.array([src_y.ravel(), src_x.ravel()]).T
-    patch_values = patch.reshape(-1, patch.shape[2])
+
+    patch_values = patch.reshape(patch.shape[0], -1)
+    mask_values = mask.reshape(-1)
     
     # Determine the bounding box for the subraster
     min_y_st, min_x_st = np.min(y_st), np.min(x_st)
     max_y_st, max_x_st = np.max(y_st), np.max(x_st)
 
-    # Determine the corresponding indices in the reference raster
-    min_j_dst, max_i_dst = ~transform * (min_x_st, min_y_st)
-    max_j_dst, min_i_dst = ~transform * (max_x_st, max_y_st)
-
-    # Define a margin around the patch for the subraster
-    min_j, min_i = int(min_j_dst) - subraster_margin, int(min_i_dst) - subraster_margin
-    max_j, max_i = int(max_j_dst) + subraster_margin, int(max_i_dst) + subraster_margin
-    
     # Extract the subraster and corresponding coordinates
-    reference_raster, count_raster = group_zarr["reference_tmp"], group_zarr["count_tmp"]
-    subraster = reference_raster[min_i:max_i, min_j:max_j, :]
-    subraster_count = count_raster[min_i:max_i, min_j:max_j, :]
+    min_x_idx = (group_zarr.coords["E"] > min_x_st).argmax().item() - 1 - subraster_margin
+    max_x_idx = (group_zarr.coords["E"] > max_x_st).argmax().item() + 1 + subraster_margin
+    min_y_idx = (group_zarr.coords["N"] < min_y_st).argmax().item() + 1 + subraster_margin
+    max_y_idx = (group_zarr.coords["N"] < max_y_st).argmax().item() - 1 - subraster_margin
+    
+    subraster = group_zarr.isel(N=slice(max_y_idx, min_y_idx), E=slice(min_x_idx, max_x_idx))
 
-    sub_y, sub_x = np.mgrid[min_i:max_i, min_j:max_j]
-    sub_lon, sub_lat = rasterio.transform.xy(transform, sub_y, sub_x, offset='center')
-    dst_points = np.array([np.ravel(sub_lat), np.ravel(sub_lon)]).T
+    sub_x = subraster.coords["E"].values
+    sub_y = subraster.coords["N"].values
+    dst_x, dst_y = np.meshgrid(sub_x, sub_y)
+    dst_points = np.array([dst_y.ravel(), dst_x.ravel()]).T
+
+    subraster["forest_mask"] = (("N", "E"), griddata(src_points, mask_values, dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"])))
 
     # Interpolate the patch data to fit the reference raster grid
-    for i in range(patch.shape[2]):
-        resampled_patch = griddata(src_points, patch_values[:, i], dst_points, method='linear').reshape(subraster.shape[:2])
+    for i in range(patch.shape[0]):
+        resampled_patch = griddata(src_points, patch_values[i, :], dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"]))
         # Add resampled patch to reference raster
-        subraster[..., i] += np.nan_to_num(resampled_patch)
-        subraster_count[..., i] += ~np.isnan(resampled_patch)
-
-    # Place the subraster back into the reference raster
-    reference_raster[min_i:max_i, min_j:max_j, :] = subraster
-    count_raster[min_i:max_i, min_j:max_j, :] = subraster_count
+        subraster["reference_tmp"][i, ...] += np.nan_to_num(resampled_patch)
+        subraster["count_tmp"][i, ...] += ~np.isnan(resampled_patch)
+        
+    subraster.to_zarr(filepath, region={"N": slice(max_y_idx, min_y_idx), "E": slice(min_x_idx, max_x_idx), channel_name: slice(0, subraster.dims[channel_name])})
 
 
-def map_patches_to_raster(patches, coords, group_zarr, transform):
+def map_patches_to_raster(filepath, patches, coords, masks, group_zarr, channel_name):
     """
     Map patches onto the reference raster.
     """
-    for patch, c in zip(patches, coords):
-        project_patch(c[0], c[1], c[2], c[3], patch, group_zarr, transform)
+    for patch, c, mask in zip(patches, coords, masks):
+        project_patch(filepath, c[0], c[1], c[2], c[3], patch, mask, group_zarr, channel_name)
 
 
-def correct_overlap(group_zarr):
+def consolidate(file_path, group_zarr):
+    raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
+    data = xr.where(count != 0, raster / count, np.nan)
+    # for anomalies: 
+    # 0 = negative anomaly
+    # 1 = normal
+    # 2 = positive anomaly
+    # 255 = missing value
+    group_zarr["data"] = discretize_anomalies(data)
+    group_zarr.to_zarr(file_path, mode="a")
+    clean_up(file_path)
 
-    raster, count, final = group_zarr["reference_tmp"], group_zarr["count_tmp"], group_zarr["data"]
 
-    for c in range(final.attrs["count"]):
-        final[:, :, c] = np.divide(raster[:, :, c], count[:, :, c], out=np.full((final.attrs["height"], final.attrs["width"]), fill_value=np.nan), where=count[:, :, c] != 0)
+def clean_up(file_path):
+    ds = xr.open_zarr(file_path, drop_variables=["reference_tmp", "count_tmp"])
+    ds.to_zarr(file_path.replace(".zarr", "_tmp.zarr"))
+    shutil.rmtree(file_path)
+    shutil.move(file_path.replace(".zarr", "_tmp.zarr"), file_path)
 
-    del group_zarr["reference_tmp"]
-    del group_zarr["count_tmp"]
 
-    zarr.consolidate_metadata(group_zarr.store)
+def get_dates(year):
+    minicube = xr.open_dataset("/data_2/dimpeo/cubes/2017_1_10_2023_12_30_7.212724933477382_46.627329370567224_128_128_raw.nc", engine="h5netcdf")
+    missing_dates = check_missing_timestamps(minicube, 2017, 2023)
+    if missing_dates:
+        minicube = minicube.reindex(
+            time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
+        )
+    return minicube.time[(year - 2017) * 73:(year - 2016) * 73].values
+
+
+def discretize_anomalies(data, missing_index=255):
+    data = xr.where(data < 0, -1, data)
+    data = xr.where(data > 0, 1, data)
+    data = data.fillna(missing_index - 1)
+    data += 1
+    return data.astype("uint8")
 
 
 if __name__ == "__main__":
 
+    YEAR = 2023
     COORDS_FILENAME = "/data_2/scratch/dbrueggemann/nn/overlay/coords_nolon_era_500k.npy"
     PARAMS_FILENAME = "/data_2/scratch/dbrueggemann/nn/overlay/params_nolon_era_500k.npy"
     ANOMS_FILENAME = "/data_2/scratch/dbrueggemann/nn/overlay/anoms_nolon_era_500k.npy"
+    MASK_FILENAME = "/data_2/scratch/dbrueggemann/nn/overlay/forest_masks.npy"
 
     out_path = "/data_2/scratch/dbrueggemann/nn/overlay"
 
@@ -121,21 +155,26 @@ if __name__ == "__main__":
     # N is the number of cubes
     # coords contains: (lon_left, lon_right, lat_bottom, lat_top) for each cube
     coords = np.load(COORDS_FILENAME)  # N x 4
+    forest_masks = np.load(MASK_FILENAME)
     
     # Parameter predictions first
-    print("Doing parameters")
-    params = np.load(PARAMS_FILENAME)  # N x 128 x 128 x 6
-    params_filename = os.path.join(out_path, "parameters.zarr")
-    group_zarr, transform = create_reference_raster(filepath=params_filename, channels=params.shape[3])
-    map_patches_to_raster(params, coords, group_zarr, transform)
-    correct_overlap(group_zarr)
-    del params
+    # print("Doing parameters")
+    # params = np.load(PARAMS_FILENAME)  # N x 128 x 128 x 6
+    # params_filename = os.path.join(out_path, "parameters.zarr")
+    # group_zarr, transform = create_reference_raster(
+    #     filepath=params_filename,
+    #     channel_name="param_layer",
+    #     channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"])
+    # map_patches_to_raster(params, coords, group_zarr, transform)
+    # correct_overlap(group_zarr)
+    # del params
 
     # Anomalies next
     print("Doing anomalies")
-    anoms = np.load(ANOMS_FILENAME)
-    anoms = anoms.transpose(0, 2, 3, 1)  # N x 128 x 128 x 73
+    anoms = np.load(ANOMS_FILENAME)  # N x 73 x 128 x 128
+    dates = get_dates(YEAR)
     anoms_filename = os.path.join(out_path, "anomalies.zarr")
-    group_zarr, transform = create_reference_raster(filepath=anoms_filename, channels=anoms.shape[3])
-    map_patches_to_raster(anoms, coords, group_zarr, transform)
-    correct_overlap(group_zarr)
+    channel_name = "time"
+    group_zarr = create_reference_raster(filepath=anoms_filename, channel_name=channel_name, channel_coords=dates)
+    map_patches_to_raster(anoms_filename, anoms, coords, forest_masks, group_zarr, channel_name=channel_name)
+    consolidate(anoms_filename, group_zarr)
