@@ -1,5 +1,13 @@
+import shutil
 import numpy as np
 import pandas as pd
+from scipy.interpolate import griddata
+from pyproj import Transformer
+import xarray as xr
+import dask.array as da
+import dask_image.ndfilters as dimg
+import torch
+import torch.nn as nn
 
 
 def get_doy(dates):
@@ -62,3 +70,158 @@ def check_missing_timestamps(cube, start_year, end_year, max_conseq_dates=2):
         print(f"Warning: Too many consecutive missing dates ({nr_conseq_dates_max})")
 
     return missing_dates
+
+
+def create_reference_raster(filepath, channel_name, channel_coords, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
+    """
+    Create a reference raster with given dimensions and transformation.
+    """
+    # bounds are outside CH extreme points: left, bottom, right, top
+    # source: https://de.wikipedia.org/wiki/Geographische_Extrempunkte_der_Schweiz
+    width = (bounds[2] - bounds[0]) // res
+    height = (bounds[3] - bounds[1]) // res
+
+    N_coords = np.linspace(bounds[3] - res // 2, bounds[1] + res // 2, height)
+    E_coords = np.linspace(bounds[0] + res // 2, bounds[2] - res // 2, width)
+
+    reference_tmp = da.zeros((len(channel_coords), height, width), dtype="float32", chunks=(20, 2000, 2000))
+    count_tmp = da.zeros((len(channel_coords), height, width), dtype="uint16", chunks=(20, 2000, 2000))
+    forest_mask_tmp = da.zeros((height, width), dtype="bool", chunks=(2000, 2000))
+
+    ds = xr.Dataset(
+        {
+            "reference_tmp": ((channel_name, "N", "E"), reference_tmp),
+            "count_tmp": ((channel_name, "N", "E"), count_tmp),
+            "forest_mask": (("N", "E"), forest_mask_tmp)
+        },
+        coords={
+            channel_name: channel_coords,
+            "N": N_coords,
+            "E": E_coords,
+        },
+    )
+
+    ds.attrs["crs"] = "EPSG:2056"
+    ds.attrs["negative_anomaly_id"] = 0
+    ds.attrs["normal_id"] = 1
+    ds.attrs["positive_anomaly_id"] = 2
+    ds.attrs["missing_id"] = 255
+
+    ds.to_zarr(filepath, compute=True)
+    return ds
+
+
+def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mask, group_zarr, channel_name, subraster_margin=3, nx=128, ny=128):
+    """
+    Project and resample patch onto the reference raster.
+    """
+    lon_grid = np.linspace(lon_left, lon_right, nx)
+    lat_grid = np.linspace(lat_top, lat_bottom, ny)
+
+    # Transform the lat/lon grid to SwissTopo coordinates
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True)
+    x_st, y_st = transformer.transform(lon_grid, lat_grid)
+
+    # Flatten the source grid and patch data for interpolation
+    src_x, src_y = np.meshgrid(x_st, y_st)
+    src_points = np.array([src_y.ravel(), src_x.ravel()]).T
+
+    patch_values = patch.reshape(patch.shape[0], -1)
+    mask_values = mask.reshape(-1)
+    
+    # Determine the bounding box for the subraster
+    min_y_st, min_x_st = np.min(y_st), np.min(x_st)
+    max_y_st, max_x_st = np.max(y_st), np.max(x_st)
+
+    # Extract the subraster and corresponding coordinates
+    min_x_idx = (group_zarr.coords["E"] > min_x_st).argmax().item() - 1 - subraster_margin
+    max_x_idx = (group_zarr.coords["E"] > max_x_st).argmax().item() + 1 + subraster_margin
+    min_y_idx = (group_zarr.coords["N"] < min_y_st).argmax().item() + 1 + subraster_margin
+    max_y_idx = (group_zarr.coords["N"] < max_y_st).argmax().item() - 1 - subraster_margin
+    
+    subraster = group_zarr.isel(N=slice(max_y_idx, min_y_idx), E=slice(min_x_idx, max_x_idx))
+
+    sub_x = subraster.coords["E"].values
+    sub_y = subraster.coords["N"].values
+    dst_x, dst_y = np.meshgrid(sub_x, sub_y)
+    dst_points = np.array([dst_y.ravel(), dst_x.ravel()]).T
+
+    subraster["forest_mask"] = (("N", "E"), griddata(src_points, mask_values, dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"])))
+
+    # Interpolate the patch data to fit the reference raster grid
+    for i in range(patch.shape[0]):
+        resampled_patch = griddata(src_points, patch_values[i, :], dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"]))
+        # Add resampled patch to reference raster
+        subraster["reference_tmp"][i, ...] += np.nan_to_num(resampled_patch)
+        subraster["count_tmp"][i, ...] += ~np.isnan(resampled_patch)
+        
+    subraster.to_zarr(filepath, region={"N": slice(max_y_idx, min_y_idx), "E": slice(min_x_idx, max_x_idx), channel_name: slice(0, subraster.dims[channel_name])})
+
+
+def apply_gaussian_filter(dask_data, sigma):
+    """
+    Apply Gaussian filter to the data with handling NaNs.
+    """
+    nan_mask = da.isnan(dask_data)
+    data_filled = da.nan_to_num(dask_data)
+    smoothed_data = dimg.gaussian_filter(data_filled, sigma=sigma)
+    smoothed_data = da.where(nan_mask, np.nan, smoothed_data)
+    return smoothed_data
+
+
+@np.errstate(invalid='ignore')
+def consolidate(file_path, group_zarr, post_processing=True):
+    raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
+    data = da.where(count != 0, raster / count, np.nan)
+
+    if post_processing:
+        # Define the sigmas for Gaussian smoothing
+        space_sigma = 50
+        time_sigma = 3
+
+        # Apply Gaussian smoothing using Dask
+        smoothed_dask_data = apply_gaussian_filter(data, (time_sigma, space_sigma, space_sigma)).rechunk(20, 2000, 2000)
+
+        # for anomalies:
+        # 0 = negative anomaly
+        # 1 = normal
+        # 2 = positive anomaly
+        # 255 = missing value
+        data = discretize_anomalies(smoothed_dask_data)
+
+    group_zarr["data"] = (("time", "N", "E"), data)
+    group_zarr.to_zarr(file_path, mode="a")
+    clean_up(file_path)
+
+
+def clean_up(file_path):
+    ds = xr.open_zarr(file_path, drop_variables=["reference_tmp", "count_tmp"])
+    ds.to_zarr(file_path.replace(".zarr", "_tmp.zarr"))
+    shutil.rmtree(file_path)
+    shutil.move(file_path.replace(".zarr", "_tmp.zarr"), file_path)
+
+
+def get_dates(year, cube_path):
+    minicube = xr.open_dataset(cube_path, engine="h5netcdf")
+    missing_dates = check_missing_timestamps(minicube, 2017, 2023)
+    if missing_dates:
+        minicube = minicube.reindex(
+            time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
+        )
+    return minicube.time[(year - 2017) * 73:(year - 2016) * 73].values
+
+
+def discretize_anomalies(data, threshold=0.1, missing_index=255):
+    data = da.where(data < -threshold, -1, data)
+    data = da.where(data > threshold, 1, data)
+    data = data.fillna(missing_index - 1)
+    data += 1
+    return data.astype("uint8")
+
+
+def convert_params(params):
+    sos = params[:, 0]
+    eos = params[:, 2] + nn.functional.softplus(params[:, 3])
+    sndvi = params[:, 4]
+    wndvi = params[:, 5]
+    return torch.stack([sos, eos, sndvi, wndvi], dim=1)
