@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 import itertools
 
-from utils.helpers import check_missing_timestamps, get_doy
+from neural_network.helpers import check_missing_timestamps, get_doy
 
 H = 128
 W = 128

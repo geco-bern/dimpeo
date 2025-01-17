@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from sklearn.metrics import d2_pinball_score
 
-from model.mlp import MLP
+from neural_network.mlp import MLP
 
 
 PATH = "/data_2/scratch/dbrueggemann/processed/nn_dataset_v3.h5"

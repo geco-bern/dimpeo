@@ -5,9 +5,9 @@ import torch.nn as nn
 import xarray as xr
 import os
 
-from model.mlp import MLP
-from tools.train_double_logistic import double_logistic_function, MEANS, STDS
-from utils.helpers import get_doy, check_missing_timestamps, create_reference_raster, project_patch, consolidate, get_dates, convert_params
+from neural_network.mlp import MLP
+from neural_network.train import double_logistic_function, MEANS, STDS
+from neural_network.helpers import get_doy, check_missing_timestamps, create_reference_raster, project_patch, consolidate, get_dates, convert_params
 
 
 NUM_DATAPOINTS_PER_YEAR = 73
