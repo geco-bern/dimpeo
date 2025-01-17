@@ -13,7 +13,7 @@ START_YEAR = 2017
 END_YEAR = 2023
 T = (END_YEAR - START_YEAR + 1) * 73
 
-save_dir = "/data_1/scratch_1/processed"
+save_dir = "/data_2/scratch/dbrueggemann/processed"
 cubes = glob.glob("/data_2/dimpeo/cubes/*_raw.nc")
 
 def cartesian_product(a, b):
@@ -35,7 +35,7 @@ def append_h5(file, key, data):
     file[key][-data.shape[0] :] = data
 
 
-with h5py.File(os.path.join(save_dir, "nn_dataset_v2.h5"), "w") as h5_file:
+with h5py.File(os.path.join(save_dir, "nn_dataset_v3.h5"), "w") as h5_file:
     for i, c in enumerate(cubes):
 
         try:
@@ -75,6 +75,23 @@ with h5py.File(os.path.join(save_dir, "nn_dataset_v2.h5"), "w") as h5_file:
         twi = np.expand_dims(minicube.twi.values[s2_mask], axis=1)
         rugg = np.expand_dims(minicube.rugg.values[s2_mask], axis=1)
         curv = np.expand_dims(minicube.curv.values[s2_mask], axis=1)
+
+        # we need to take the mean and std without biasing it towards missing value
+        # get first a mean annual curve, then take mean and std
+        pressure = minicube.era5_sp.values[:, s2_mask]
+        annual_pressure = np.nanmean(np.reshape(pressure, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+        pressure_mean = np.expand_dims(np.mean(annual_pressure, axis=0), axis=1)
+        pressure_std = np.expand_dims(np.std(annual_pressure, axis=0), axis=1)
+
+        temperature = minicube.era5_t2m.values[:, s2_mask]
+        annual_temperature = np.nanmean(np.reshape(temperature, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+        temperature_mean = np.expand_dims(np.mean(annual_temperature, axis=0), axis=1)
+        temperature_std = np.expand_dims(np.std(annual_temperature, axis=0), axis=1)
+
+        precipitation = minicube.era5_tp.values[:, s2_mask]
+        annual_precipitation = np.nanmean(np.reshape(precipitation, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+        precipitation_mean = np.expand_dims(np.mean(annual_precipitation, axis=0), axis=1)
+        precipitation_std = np.expand_dims(np.std(annual_precipitation, axis=0), axis=1)
 
         N = pixels.shape[0]
 
@@ -165,6 +182,48 @@ with h5py.File(os.path.join(save_dir, "nn_dataset_v2.h5"), "w") as h5_file:
                 (T,),
                 "uint16",
             )
+            create_h5(
+                h5_file,
+                "press_mean",
+                pressure_mean,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "press_std",
+                pressure_std,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "temp_mean",
+                temperature_mean,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "temp_std",
+                temperature_std,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "precip_mean",
+                precipitation_mean,
+                (1,),
+                "float32",
+            )
+            create_h5(
+                h5_file,
+                "precip_std",
+                precipitation_std,
+                (1,),
+                "float32",
+            )
         else:
             append_h5(h5_file, "ndvi", pixels)
             append_h5(h5_file, "lon_lat", lon_lat)
@@ -178,6 +237,12 @@ with h5py.File(os.path.join(save_dir, "nn_dataset_v2.h5"), "w") as h5_file:
             append_h5(h5_file, "rugg", rugg)
             append_h5(h5_file, "curv", curv)
             append_h5(h5_file, "doy", doy)
+            append_h5(h5_file, "press_mean", pressure_mean)
+            append_h5(h5_file, "press_std", pressure_std)
+            append_h5(h5_file, "temp_mean", temperature_mean)
+            append_h5(h5_file, "temp_std", temperature_std)
+            append_h5(h5_file, "precip_mean", precipitation_mean)
+            append_h5(h5_file, "precip_std", precipitation_std)
 
         if i % 100 == 0:
             print("Done {} cubes".format(i))

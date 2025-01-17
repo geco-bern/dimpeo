@@ -12,14 +12,55 @@ from sklearn.metrics import d2_pinball_score
 from model.mlp import MLP
 
 
-PATH = "/data_1/scratch_1/processed/nn_dataset_v2.h5"
+PATH = "/data_2/scratch/dbrueggemann/processed/nn_dataset_v3.h5"
 YEARS_IN_TRAIN = 6  # first six years in train, last year in test
 SPLIT_IDX = 73 * YEARS_IN_TRAIN
 
 
+# rescale input (stats obtained from full dataset)
+MEANS = {
+    "lon": 8.34458,
+    "lat": 46.32019,
+    "dem": 1104.5027,
+    "fc": 43.102547,
+    "fh": 15.638395,
+    "slope": 26.418936,
+    "easting": -0.0069493465,
+    "northing": 0.062305786,
+    "twi": 2.8649843,
+    "rugg": 8.363732,
+    "curv": 6.1888146e-05,
+    "press_mean": 87901.86,
+    "press_std": 293.46072,
+    "temp_mean": 280.14288,
+    "temp_std": 6.8551936,
+    "precip_mean": 0.019856384,
+    "precip_std": 0.009813356,
+}
+STDS = {
+    "lon": 0.9852665,
+    "lat": 0.61929077,
+    "dem": 409.8894,
+    "fc": 40.840992,
+    "fh": 30.395235,
+    "slope": 13.358144,
+    "easting": 0.69276434,
+    "northing": 0.7184338,
+    "twi": 1.861385,
+    "rugg": 5.4581103,
+    "curv": 0.0061930786,
+    "press_mean": 5674.5396,
+    "press_std": 52.65978,
+    "temp_mean": 3.3523095,
+    "temp_std": 0.4047956,
+    "precip_mean": 0.0034253746,
+    "precip_std": 0.0024573584,
+}
+
+
 class H5Dataset():
 
-    all_features = ["lon", "lat", "dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv"]
+    all_features = ["lon", "lat", "dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv", "press_mean", "press_std", "temp_mean", "temp_std", "precip_mean", "precip_std"]
 
     def __init__(self, file_path, features=None):
         self.file_path = file_path
@@ -49,6 +90,18 @@ class H5Dataset():
                 self.rugg_ds = file.get("rugg")[:]
             if "curv" in self.features:
                 self.curv_ds = file.get("curv")[:]
+            if "press_mean" in self.features:
+                self.press_mean_ds = file.get("press_mean")[:]
+            if "press_std" in self.features:
+                self.press_std_ds = file.get("press_std")[:]
+            if "temp_mean" in self.features:
+                self.temp_mean_ds = file.get("temp_mean")[:]
+            if "temp_std" in self.features:
+                self.temp_std_ds = file.get("temp_std")[:]
+            if "precip_mean" in self.features:
+                self.precip_mean_ds = file.get("precip_mean")[:]
+            if "precip_std" in self.features:
+                self.precip_std_ds = file.get("precip_std")[:]
 
         self.missingness = np.load(os.path.join(os.path.dirname(file_path), "missingness.npy"))
 
@@ -80,6 +133,18 @@ class H5Dataset():
                 inp.append(self.rugg_ds[index])
             elif f == "curv":
                 inp.append(self.curv_ds[index])
+            elif f == "press_mean":
+                inp.append(self.press_mean_ds[index])
+            elif f == "press_std":
+                inp.append(self.press_std_ds[index])
+            elif f == "temp_mean":
+                inp.append(self.temp_mean_ds[index])
+            elif f == "temp_std":
+                inp.append(self.temp_std_ds[index])
+            elif f == "precip_mean":
+                inp.append(self.precip_mean_ds[index])
+            elif f == "precip_std":
+                inp.append(self.precip_std_ds[index])
         inp = np.concatenate(inp)
         return ndvi, doy, inp
 
@@ -96,11 +161,31 @@ def double_logistic_function(t, params):
     return (M - m) * (sigmoid_sos_mat - sigmoid_sen_eos) + m
 
 
+def double_logistic_function_rec(t, params):
+    sos, mat_minus_sos, sen_minus_mat, eos_minus_sen, M, m = torch.split(params, 1, dim=1)
+    mat_minus_sos = nn.functional.softplus(mat_minus_sos)
+    sen_minus_mat = nn.functional.softplus(sen_minus_mat)
+    eos_minus_sen = nn.functional.softplus(eos_minus_sen)
+    sigmoid_sos_mat = nn.functional.sigmoid(-2 * (2 * sos + mat_minus_sos - 2 * t) / (mat_minus_sos + 1e-10))
+    sigmoid_sen_eos = nn.functional.sigmoid(-2 * (2 * (sen_minus_mat + mat_minus_sos + sos) + eos_minus_sen - 2 * t) / (eos_minus_sen + 1e-10))
+    return (M - m) * (sigmoid_sos_mat - sigmoid_sen_eos) + m
+
+
+def double_logistic_function_v2(t, params):
+    sos, m_sos, eos_minus_sos, m_eos, sNDVI, wNDVI = torch.split(params, 1, dim=1)
+    m_sos = nn.functional.softplus(m_sos)
+    m_eos = nn.functional.softplus(m_eos)
+    eos_minus_sos = nn.functional.softplus(eos_minus_sos)
+    sigmoid_sos = nn.functional.sigmoid(m_sos * (t - sos))
+    sigmoid_eos = nn.functional.sigmoid(-m_eos * (t - (eos_minus_sos + sos)))
+    return (sNDVI - wNDVI) * (sigmoid_sos + sigmoid_eos - 1) + wNDVI
+
+
 def objective_pinball(params, t, ndvi, nan_mask, alpha=0.5, weights=None):
     ndvi_pred = double_logistic_function(t, params)
     diff = ndvi - ndvi_pred
     loss = torch.max(torch.mul(alpha, diff), torch.mul((alpha - 1), diff))
-    # we need to reweight the qunatiles to prevent a degenerate solution
+    # we need to reweight the quantiles to prevent a degenerate solution
     if weights is not None:
         loss = loss * weights.repeat(YEARS_IN_TRAIN).unsqueeze(0)
     return torch.mean(loss[~nan_mask])
@@ -133,41 +218,19 @@ def train(name, features=None):
 
     print("Using features: {}".format(ds.features))
 
-    # rescale input (stats obtained from full dataset)
-    MEANS = {
-        "lon": 8.34458,
-        "lat": 46.32019,
-        "dem": 1104.5027,
-        "fc": 43.102547,
-        "fh": 15.638395,
-        "slope": 26.418936,
-        "easting": -0.0069493465,
-        "northing": 0.062305786,
-        "twi": 2.8649843,
-        "rugg": 8.363732,
-        "curv": 6.1888146e-05,
-    }
-    STDS = {
-        "lon": 0.9852665,
-        "lat": 0.61929077,
-        "dem": 409.8894,
-        "fc": 40.840992,
-        "fh": 30.395235,
-        "slope": 13.358144,
-        "easting": 0.69276434,
-        "northing": 0.7184338,
-        "twi": 1.861385,
-        "rugg": 5.4581103,
-        "curv": 0.0061930786,
-    }
-
+    
     means_pt = torch.tensor([MEANS[f] for f in ds.features]).to(device).unsqueeze(0)
     stds_pt = torch.tensor([STDS[f] for f in ds.features]).to(device).unsqueeze(0)
 
     # this model has ~470k parameters
     encoder = MLP(d_in=len(ds.features), d_out=8, n_blocks=8, d_block=256, dropout=0, skip_connection=True).to(device)
-    # we don't care about overfitting --> no weight decay
-    optimizer = torch.optim.Adam(encoder.parameters(), lr=lr)
+    # we don't care about overfitting --> weight decay not strictly necessary
+    bias_params = [p for name, p in encoder.named_parameters() if 'bias' in name]
+    others = [p for name, p in encoder.named_parameters() if 'bias' not in name]
+    optimizer = torch.optim.AdamW([
+                {'params': others},
+                {'params': bias_params, 'weight_decay': 0}
+            ], weight_decay=1e-4, lr=lr)
 
     # in total we have 20314711 pixels, with 6 parameters per pixel
     # so technically the data has ~120 Mio degrees of freedom
@@ -259,7 +322,7 @@ def train(name, features=None):
                     writer.add_scalar("D2PinballScoreUpper/train", d2_score_upper, n_iterations)
 
             if (n_iterations + 1) % 10000 == 0:
-                torch.save(encoder.state_dict(), "/data_1/scratch_1/dbrueggemann/nn/encoder_{}.pt".format(name))
+                torch.save(encoder.state_dict(), "/data_2/scratch/dbrueggemann/nn/encoder_{}.pt".format(name))
 
             n_iterations += 1
             if n_iterations >= max_iterations:
@@ -272,7 +335,7 @@ def train(name, features=None):
         n_epochs += 1
         writer.add_scalar("Epochs", n_epochs, n_iterations)
 
-    torch.save(encoder.state_dict(), "/data_1/scratch_1/dbrueggemann/nn/encoder_{}.pt".format(name))
+    torch.save(encoder.state_dict(), "/data_2/scratch/dbrueggemann/nn/encoder_{}.pt".format(name))
 
     writer.flush()
     writer.close()

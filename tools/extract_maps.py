@@ -62,8 +62,6 @@ param_dataset = create_reference_raster(filepath=params_path, channel_name="laye
 
 for i, path in enumerate(filepaths):
     with torch.no_grad():
-        # idx = rand_ix + i
-        # path = filepaths[idx]
 
         try:
             minicube = xr.open_dataset(path, engine="h5netcdf")
