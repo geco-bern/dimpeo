@@ -12,10 +12,9 @@ from sklearn.metrics import d2_pinball_score
 from neural_network.mlp import MLP
 
 
-PATH = "/data_2/scratch/dbrueggemann/processed/nn_dataset_v3.h5"
 YEARS_IN_TRAIN = 6  # first six years in train, last year in test
 SPLIT_IDX = 73 * YEARS_IN_TRAIN
-
+T_SCALE = 1.0 / 365.0  # rescale target
 
 # rescale input (stats obtained from full dataset)
 MEANS = {
@@ -161,26 +160,6 @@ def double_logistic_function(t, params):
     return (M - m) * (sigmoid_sos_mat - sigmoid_sen_eos) + m
 
 
-def double_logistic_function_rec(t, params):
-    sos, mat_minus_sos, sen_minus_mat, eos_minus_sen, M, m = torch.split(params, 1, dim=1)
-    mat_minus_sos = nn.functional.softplus(mat_minus_sos)
-    sen_minus_mat = nn.functional.softplus(sen_minus_mat)
-    eos_minus_sen = nn.functional.softplus(eos_minus_sen)
-    sigmoid_sos_mat = nn.functional.sigmoid(-2 * (2 * sos + mat_minus_sos - 2 * t) / (mat_minus_sos + 1e-10))
-    sigmoid_sen_eos = nn.functional.sigmoid(-2 * (2 * (sen_minus_mat + mat_minus_sos + sos) + eos_minus_sen - 2 * t) / (eos_minus_sen + 1e-10))
-    return (M - m) * (sigmoid_sos_mat - sigmoid_sen_eos) + m
-
-
-def double_logistic_function_v2(t, params):
-    sos, m_sos, eos_minus_sos, m_eos, sNDVI, wNDVI = torch.split(params, 1, dim=1)
-    m_sos = nn.functional.softplus(m_sos)
-    m_eos = nn.functional.softplus(m_eos)
-    eos_minus_sos = nn.functional.softplus(eos_minus_sos)
-    sigmoid_sos = nn.functional.sigmoid(m_sos * (t - sos))
-    sigmoid_eos = nn.functional.sigmoid(-m_eos * (t - (eos_minus_sos + sos)))
-    return (sNDVI - wNDVI) * (sigmoid_sos + sigmoid_eos - 1) + wNDVI
-
-
 def objective_pinball(params, t, ndvi, nan_mask, alpha=0.5, weights=None):
     ndvi_pred = double_logistic_function(t, params)
     diff = ndvi - ndvi_pred
@@ -191,10 +170,10 @@ def objective_pinball(params, t, ndvi, nan_mask, alpha=0.5, weights=None):
     return torch.mean(loss[~nan_mask])
 
 
-def train(name, features=None):
+def train(name, data_path, features=None):
     torch.manual_seed(1)
 
-    writer = SummaryWriter("runs/{}".format(name))
+    writer = SummaryWriter(os.path.join(os.environ["SAVE_DIR"], f"runs/{name}"))
 
     max_iterations = 500000
     lr = 0.001
@@ -202,23 +181,19 @@ def train(name, features=None):
     batch_size = 256
     device = 'cuda'
 
-    # rescale target
-    T_SCALE = 1.0 / 365.0
-
     print("Starting model with:")
     print("name = {}".format(name))
 
     print("Loading dataset into RAM...")
     if isinstance(features, str):
         features = features.split(",")
-    ds = H5Dataset(PATH, features)
+    ds = H5Dataset(data_path, features)
     # load avg missingness as a function of DOY (73 entries in total)
     missingness = torch.from_numpy(ds.missingness).to(device)
     loader = DataLoader(ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32)
 
     print("Using features: {}".format(ds.features))
 
-    
     means_pt = torch.tensor([MEANS[f] for f in ds.features]).to(device).unsqueeze(0)
     stds_pt = torch.tensor([STDS[f] for f in ds.features]).to(device).unsqueeze(0)
 
@@ -322,7 +297,7 @@ def train(name, features=None):
                     writer.add_scalar("D2PinballScoreUpper/train", d2_score_upper, n_iterations)
 
             if (n_iterations + 1) % 10000 == 0:
-                torch.save(encoder.state_dict(), "/data_2/scratch/dbrueggemann/nn/encoder_{}.pt".format(name))
+                torch.save(encoder.state_dict(), os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt"))
 
             n_iterations += 1
             if n_iterations >= max_iterations:
@@ -335,15 +310,17 @@ def train(name, features=None):
         n_epochs += 1
         writer.add_scalar("Epochs", n_epochs, n_iterations)
 
-    torch.save(encoder.state_dict(), "/data_2/scratch/dbrueggemann/nn/encoder_{}.pt".format(name))
+    torch.save(encoder.state_dict(), os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt"))
 
     writer.flush()
     writer.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser('train_double_logistic')
-    parser.add_argument('-n', '--name', type=str)
+    parser = argparse.ArgumentParser('DIMPEO Training')
+    parser.add_argument('-n', '--name', type=str, default="dimpeo_training")
+    parser.add_argument('--data-path', type=str, default=os.path.join(os.environ["PROC_DIR"], "nn_dataset.h5"))
     parser.add_argument('--features', type=str)
     args = parser.parse_args()
-    train(args.name, args.features)
+
+    train(args.name, args.data_path, args.features)

@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import glob
 import torch
@@ -11,20 +12,12 @@ from neural_network.helpers import get_doy, check_missing_timestamps, create_ref
 
 
 NUM_DATAPOINTS_PER_YEAR = 73
-H = 128
-W = 128
+H, W = 128, 128
 START_YEAR = 2017
 END_YEAR = 2023
 YEARS_IN_TRAIN = 6  # first six years in train, last year in test
 SPLIT_IDX = NUM_DATAPOINTS_PER_YEAR * YEARS_IN_TRAIN
 T_SCALE = 1.0 / 365.0
-
-
-folder='/data_2/dimpeo/cubes'
-filepaths = sorted(list(glob.glob(os.path.join(folder, "*_raw.nc"))))
-device = "cuda"
-anoms_path = "/data_2/scratch/dbrueggemann/nn/overlay/anomalies.zarr"
-params_path = "/data_2/scratch/dbrueggemann/nn/overlay/parameters.zarr"
 
 
 def rectify_parameters(params):
@@ -42,134 +35,146 @@ def rectify_parameters(params):
     return rec_params
 
 
-# features = ["lon", "lat", "dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv"]
-# features = ["lat", "dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv"]
-features = ["dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv", "press_mean", "press_std", "temp_mean", "temp_std", "precip_mean", "precip_std"]
+def inference(name, encoder_name, features):
 
-encoder = MLP(d_in=len(features), d_out=8, n_blocks=8, d_block=256, dropout=0, skip_connection=True).to(device)
-encoder.load_state_dict(torch.load("/data_2/scratch/dbrueggemann/nn/encoder_nolon_era_500k.pt"))
-encoder.eval()
+    anoms_path = os.path.join(os.environ["SAVE_DIR"], f"anomalies_{name}.zarr")
+    params_path = os.path.join(os.environ["SAVE_DIR"], f"parameters_{name}.zarr")
 
-means = torch.tensor([MEANS[f] for f in features], dtype=float, device=device).unsqueeze(1).unsqueeze(1)
-stds = torch.tensor([STDS[f] for f in features], dtype=float, device=device).unsqueeze(1).unsqueeze(1)
+    filepaths = sorted(list(glob.glob(os.path.join(os.environ["CUBE_DIR"], "*_raw.nc"))))
+    device = "cuda"
 
-t_plot = torch.linspace(0, 365, 1000).unsqueeze(0) * T_SCALE
+    if features is None:
+        features = ["dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv", "press_mean", "press_std", "temp_mean", "temp_std", "precip_mean", "precip_std"]
 
-# TODO: how to unify dates?
-dates = get_dates(END_YEAR, filepaths[0])
-anom_dataset = create_reference_raster(filepath=anoms_path, channel_name="time", channel_coords=dates)
-param_dataset = create_reference_raster(filepath=params_path, channel_name="layer", channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"])
+    encoder = MLP(d_in=len(features), d_out=8, n_blocks=8, d_block=256, dropout=0, skip_connection=True).to(device)
+    encoder.load_state_dict(torch.load(os.path.join(os.environ["SAVE_DIR"], encoder_name)))
+    encoder.eval()
 
-for i, path in enumerate(filepaths):
-    with torch.no_grad():
+    means = torch.tensor([MEANS[f] for f in features], dtype=float, device=device).unsqueeze(1).unsqueeze(1)
+    stds = torch.tensor([STDS[f] for f in features], dtype=float, device=device).unsqueeze(1).unsqueeze(1)
 
-        try:
-            minicube = xr.open_dataset(path, engine="h5netcdf")
-        except OSError:
-            continue
+    anom_dataset = create_reference_raster(filepath=anoms_path, channel_name="tmp", channel_coords=list(range(NUM_DATAPOINTS_PER_YEAR)))
+    param_dataset = create_reference_raster(filepath=params_path, channel_name="layer", channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"])
 
-        missing_dates = check_missing_timestamps(minicube, START_YEAR, END_YEAR)
-        if missing_dates:
-            minicube = minicube.reindex(
-                time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
-            )
+    for i, path in enumerate(filepaths):
+        with torch.no_grad():
 
-        try:
-            ndvi = minicube.s2_ndvi.where((minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])).values
-            forest_mask = (minicube.FOREST_MASK.values > 0.8)
-        except AttributeError:
-            continue
+            try:
+                minicube = xr.open_dataset(path, engine="h5netcdf")
+            except OSError:
+                continue
 
-        lon_left, lon_right = minicube.lon[0].values, minicube.lon[-1].values
-        lat_bottom, lat_top = minicube.lat[-1].values, minicube.lat[0].values
+            missing_dates = check_missing_timestamps(minicube, START_YEAR, END_YEAR)
+            if missing_dates:
+                minicube = minicube.reindex(
+                    time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
+                )
 
-        # convert to torch
-        ndvi = torch.from_numpy(ndvi).to(device)
-        doy = torch.from_numpy(get_doy(minicube.time.values)).to(device)
-        forest_mask = torch.from_numpy(forest_mask).to(device)
+            try:
+                ndvi = minicube.s2_ndvi.where((minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])).values
+                forest_mask = (minicube.FOREST_MASK.values > 0.8)
+            except AttributeError:
+                continue
 
-        # mask out non-forest pixels
-        ndvi[:, ~forest_mask] = torch.nan
+            lon_left, lon_right = minicube.lon[0].values, minicube.lon[-1].values
+            lat_bottom, lat_top = minicube.lat[-1].values, minicube.lat[0].values
 
-        # get test
-        ndvi_test = ndvi[SPLIT_IDX:]
-        doy_test = doy[SPLIT_IDX:]
+            # convert to torch
+            ndvi = torch.from_numpy(ndvi).to(device)
+            doy = torch.from_numpy(get_doy(minicube.time.values)).to(device)
+            forest_mask = torch.from_numpy(forest_mask).to(device)
 
-        # features for network
-        dem = torch.from_numpy(minicube.DEM.values).to(device)
-        fc = torch.from_numpy(minicube.FC.values).to(device)
-        fh = torch.from_numpy(minicube.FH.values).to(device)
-        slope = torch.from_numpy(minicube.slope.values).to(device)
-        easting = torch.from_numpy(minicube.easting.values).to(device)
-        northing = torch.from_numpy(minicube.northing.values).to(device)
-        twi = torch.from_numpy(minicube.twi.values).to(device)
-        rugg = torch.from_numpy(minicube.rugg.values).to(device)
-        curv = torch.from_numpy(minicube.curv.values).to(device)
+            # mask out non-forest pixels
+            ndvi[:, ~forest_mask] = torch.nan
 
-        pressure = torch.from_numpy(minicube.era5_sp.values[:SPLIT_IDX]).to(device)
-        annual_pressure = torch.nanmean(pressure.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
-        press_mean = torch.mean(annual_pressure, axis=0)
-        press_std = torch.std(annual_pressure, axis=0)
+            # get test
+            ndvi_test = ndvi[SPLIT_IDX:]
+            doy_test = doy[SPLIT_IDX:]
 
-        temperature = torch.from_numpy(minicube.era5_t2m.values[:SPLIT_IDX]).to(device)
-        annual_temperature = torch.nanmean(temperature.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
-        temp_mean = torch.mean(annual_temperature, axis=0)
-        temp_std = torch.std(annual_temperature, axis=0)
+            # features for network
+            dem = torch.from_numpy(minicube.DEM.values).to(device)
+            fc = torch.from_numpy(minicube.FC.values).to(device)
+            fh = torch.from_numpy(minicube.FH.values).to(device)
+            slope = torch.from_numpy(minicube.slope.values).to(device)
+            easting = torch.from_numpy(minicube.easting.values).to(device)
+            northing = torch.from_numpy(minicube.northing.values).to(device)
+            twi = torch.from_numpy(minicube.twi.values).to(device)
+            rugg = torch.from_numpy(minicube.rugg.values).to(device)
+            curv = torch.from_numpy(minicube.curv.values).to(device)
 
-        precipitation = torch.from_numpy(minicube.era5_tp.values[:SPLIT_IDX]).to(device)
-        annual_precipitation = torch.nanmean(precipitation.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
-        precip_mean = torch.mean(annual_precipitation, axis=0)
-        precip_std = torch.std(annual_precipitation, axis=0)
+            pressure = torch.from_numpy(minicube.era5_sp.values[:SPLIT_IDX]).to(device)
+            annual_pressure = torch.nanmean(pressure.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
+            press_mean = torch.mean(annual_pressure, axis=0)
+            press_std = torch.std(annual_pressure, axis=0)
 
-        fc[fc == -9999] = torch.nan
-        inp = torch.stack([dem, fc, fh, slope, easting, northing, twi, rugg, curv, press_mean, press_std, temp_mean, temp_std, precip_mean, precip_std], axis=0)  # 11 x H x W
-        inp = (inp - means) / stds
-        inp = torch.nan_to_num(inp, nan=0.0)
+            temperature = torch.from_numpy(minicube.era5_t2m.values[:SPLIT_IDX]).to(device)
+            annual_temperature = torch.nanmean(temperature.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
+            temp_mean = torch.mean(annual_temperature, axis=0)
+            temp_std = torch.std(annual_temperature, axis=0)
 
-        # only forward forest pixels
-        masked_inp = inp[:, forest_mask]
-        masked_inp = masked_inp.permute(1, 0)  # B x 11
+            precipitation = torch.from_numpy(minicube.era5_tp.values[:SPLIT_IDX]).to(device)
+            annual_precipitation = torch.nanmean(precipitation.view(END_YEAR - START_YEAR, 73, H, W), axis=0)
+            precip_mean = torch.mean(annual_precipitation, axis=0)
+            precip_std = torch.std(annual_precipitation, axis=0)
 
-        preds = encoder(masked_inp.float())
-        paramsl = preds[:, [0, 1, 2, 3, 4, 5]]
-        paramsu = torch.cat([preds[:, [0, 1, 2, 3]], preds[:, [4, 5]] + nn.functional.softplus(preds[:, [6, 7]])], axis=1)
+            fc[fc == -9999] = torch.nan
+            inp = torch.stack([dem, fc, fh, slope, easting, northing, twi, rugg, curv, press_mean, press_std, temp_mean, temp_std, precip_mean, precip_std], axis=0)  # 11 x H x W
+            inp = (inp - means) / stds
+            inp = torch.nan_to_num(inp, nan=0.0)
 
-        paramsl = rectify_parameters(paramsl)
-        paramsu = rectify_parameters(paramsu)
+            # only forward forest pixels
+            masked_inp = inp[:, forest_mask]
+            masked_inp = masked_inp.permute(1, 0)  # B x 11
 
-        # taking the mean is only necessary for M and m, because the time parameters are shared
-        params = (paramsl + paramsu) / 2
-        params = convert_params(params)
+            preds = encoder(masked_inp.float())
+            paramsl = preds[:, [0, 1, 2, 3, 4, 5]]
+            paramsu = torch.cat([preds[:, [0, 1, 2, 3]], preds[:, [4, 5]] + nn.functional.softplus(preds[:, [6, 7]])], axis=1)
 
-        params_map = torch.full((H, W, 4), torch.nan, device=device)
-        params_map[forest_mask, :] = params
+            paramsl = rectify_parameters(paramsl)
+            paramsu = rectify_parameters(paramsu)
 
-        project_patch(params_path, lon_left, lon_right, lat_bottom, lat_top, params_map.cpu().numpy(), forest_mask.cpu().numpy(), param_dataset, "layer")
+            # taking the mean is only necessary for M and m, because the time parameters are shared
+            params = (paramsl + paramsu) / 2
+            params = convert_params(params)
 
-        # save the anomaly score
-        t_test = doy_test * T_SCALE
-        ndvi_lower_pred = double_logistic_function(t_test, paramsl).permute(1, 0)
-        ndvi_upper_pred = double_logistic_function(t_test, paramsu).permute(1, 0)
+            params_map = torch.full((H, W, 4), torch.nan, device=device)
+            params_map[forest_mask, :] = params
 
-        res_ndvi_lower_pred = torch.full(ndvi_test.shape, torch.nan, device=device)
-        res_ndvi_upper_pred = torch.full(ndvi_test.shape, torch.nan, device=device)
+            project_patch(params_path, lon_left, lon_right, lat_bottom, lat_top, params_map.cpu().numpy(), forest_mask.cpu().numpy(), param_dataset, "layer")
 
-        res_ndvi_lower_pred[:, forest_mask] = ndvi_lower_pred
-        res_ndvi_upper_pred[:, forest_mask] = ndvi_upper_pred
+            # save the anomaly score
+            t_test = doy_test * T_SCALE
+            ndvi_lower_pred = double_logistic_function(t_test, paramsl).permute(1, 0)
+            ndvi_upper_pred = double_logistic_function(t_test, paramsu).permute(1, 0)
 
-        iqr = res_ndvi_upper_pred - res_ndvi_lower_pred
+            res_ndvi_lower_pred = torch.full(ndvi_test.shape, torch.nan, device=device)
+            res_ndvi_upper_pred = torch.full(ndvi_test.shape, torch.nan, device=device)
 
-        anomaly_score = torch.full(ndvi_test.shape, torch.nan, device=device, dtype=float)
-        anomaly_score[ndvi_test > res_ndvi_upper_pred] = ((ndvi_test - res_ndvi_upper_pred) / iqr)[ndvi_test > res_ndvi_upper_pred]
-        anomaly_score[ndvi_test < res_ndvi_lower_pred] = ((ndvi_test - res_ndvi_lower_pred) / iqr)[ndvi_test < res_ndvi_lower_pred]
-        anomaly_score[(ndvi_test >= res_ndvi_lower_pred) & (ndvi_test <= res_ndvi_upper_pred)] = 0.0
+            res_ndvi_lower_pred[:, forest_mask] = ndvi_lower_pred
+            res_ndvi_upper_pred[:, forest_mask] = ndvi_upper_pred
 
-        project_patch(anoms_path, lon_left, lon_right, lat_bottom, lat_top, anomaly_score.cpu().numpy(), forest_mask.cpu().numpy(), anom_dataset, "time")
+            iqr = res_ndvi_upper_pred - res_ndvi_lower_pred
+
+            anomaly_score = torch.full(ndvi_test.shape, torch.nan, device=device, dtype=float)
+            anomaly_score[ndvi_test > res_ndvi_upper_pred] = ((ndvi_test - res_ndvi_upper_pred) / iqr)[ndvi_test > res_ndvi_upper_pred]
+            anomaly_score[ndvi_test < res_ndvi_lower_pred] = ((ndvi_test - res_ndvi_lower_pred) / iqr)[ndvi_test < res_ndvi_lower_pred]
+            anomaly_score[(ndvi_test >= res_ndvi_lower_pred) & (ndvi_test <= res_ndvi_upper_pred)] = 0.0
+
+            project_patch(anoms_path, lon_left, lon_right, lat_bottom, lat_top, anomaly_score.cpu().numpy(), forest_mask.cpu().numpy(), anom_dataset, "tmp")
+
+        if (i + 1) % 100 == 0:
+            print("done {}".format(i + 1))
+
+    consolidate(anoms_path, anom_dataset, channel_name="time", channel_coords=get_dates(), post_processing=True)
+    consolidate(params_path, param_dataset, channel_name="layer", channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"], post_processing=False)
 
 
-    if (i + 1) % 100 == 0:
-        print("done {}".format(i + 1))
+if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser('DIMPEO Inference')
+    parser.add_argument('-n', '--name', type=str, default="dimpeo_inference")
+    parser.add_argument('--encoder-name', type=str)
+    parser.add_argument('--features', type=str, default=None)
+    args = parser.parse_args()
 
-consolidate(anoms_path, anom_dataset, post_processing=True)
-consolidate(params_path, param_dataset, post_processing=False)
+    inference(args.name, args.encoder_name, args.features)

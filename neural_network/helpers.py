@@ -87,7 +87,7 @@ def create_reference_raster(filepath, channel_name, channel_coords, res=20, boun
     reference_tmp = da.zeros((len(channel_coords), height, width), dtype="float32", chunks=(20, 2000, 2000))
     count_tmp = da.zeros((len(channel_coords), height, width), dtype="uint16", chunks=(20, 2000, 2000))
     forest_mask_tmp = da.zeros((height, width), dtype="bool", chunks=(2000, 2000))
-
+    
     ds = xr.Dataset(
         {
             "reference_tmp": ((channel_name, "N", "E"), reference_tmp),
@@ -111,7 +111,7 @@ def create_reference_raster(filepath, channel_name, channel_coords, res=20, boun
     return ds
 
 
-def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mask, group_zarr, channel_name, subraster_margin=3, nx=128, ny=128):
+def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mask, group_zarr, channel_name, nx=128, ny=128):
     """
     Project and resample patch onto the reference raster.
     """
@@ -128,16 +128,18 @@ def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mas
 
     patch_values = patch.reshape(patch.shape[0], -1)
     mask_values = mask.reshape(-1)
-    
+
     # Determine the bounding box for the subraster
-    min_y_st, min_x_st = np.min(y_st), np.min(x_st)
-    max_y_st, max_x_st = np.max(y_st), np.max(x_st)
+    delta_x = (np.max(x_st) - np.min(x_st)) / (nx - 1)
+    delta_y = (np.max(y_st) - np.min(y_st)) / (ny - 1)
+    min_y_st, min_x_st = np.min(y_st) - delta_y / 2, np.min(x_st) - delta_x / 2
+    max_y_st, max_x_st = np.max(y_st) + delta_y / 2, np.max(x_st) + delta_x / 2
 
     # Extract the subraster and corresponding coordinates
-    min_x_idx = (group_zarr.coords["E"] > min_x_st).argmax().item() - 1 - subraster_margin
-    max_x_idx = (group_zarr.coords["E"] > max_x_st).argmax().item() + 1 + subraster_margin
-    min_y_idx = (group_zarr.coords["N"] < min_y_st).argmax().item() + 1 + subraster_margin
-    max_y_idx = (group_zarr.coords["N"] < max_y_st).argmax().item() - 1 - subraster_margin
+    min_x_idx = (group_zarr.coords["E"] >= min_x_st).argmax().item()
+    max_x_idx = (group_zarr.coords["E"] > max_x_st).argmax().item() - 1
+    min_y_idx = (group_zarr.coords["N"] < min_y_st).argmax().item() - 1
+    max_y_idx = (group_zarr.coords["N"] <= max_y_st).argmax().item()
     
     subraster = group_zarr.isel(N=slice(max_y_idx, min_y_idx), E=slice(min_x_idx, max_x_idx))
 
@@ -169,18 +171,34 @@ def apply_gaussian_filter(dask_data, sigma):
     return smoothed_data
 
 
+def group_by_month(data):
+    num_chunks = 12
+    chunk_size = data.shape[0] // num_chunks
+    # Split the data into 12 chunks using slicing 
+    data_chunks = [data[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks - 1)]
+    data_chunks.append(data[(num_chunks - 1) * chunk_size:])
+    means = [da.nanmean(chunk, axis=0) for chunk in data_chunks]
+    return da.stack(means, axis=0).rechunk(chunks=[-1, 2000, 2000])
+
+
 @np.errstate(invalid='ignore')
-def consolidate(file_path, group_zarr, post_processing=True):
+def consolidate(file_path, group_zarr, channel_name, channel_coords, post_processing=True):
     raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
     data = da.where(count != 0, raster / count, np.nan)
 
+    if not channel_name in group_zarr.coords:
+        group_zarr = group_zarr.assign_coords({channel_name: channel_coords})
+
     if post_processing:
         # Define the sigmas for Gaussian smoothing
-        space_sigma = 50
-        time_sigma = 3
+        # space_sigma = 50
+        # time_sigma = 3
 
         # Apply Gaussian smoothing using Dask
-        smoothed_dask_data = apply_gaussian_filter(data, (time_sigma, space_sigma, space_sigma)).rechunk(20, 2000, 2000)
+        # smoothed_dask_data = apply_gaussian_filter(data, (time_sigma, space_sigma, space_sigma)).rechunk(20, 2000, 2000)
+
+        # Instead, group by month
+        smoothed_dask_data = group_by_month(data)
 
         # for anomalies:
         # 0 = negative anomaly
@@ -189,32 +207,27 @@ def consolidate(file_path, group_zarr, post_processing=True):
         # 255 = missing value
         data = discretize_anomalies(smoothed_dask_data)
 
-    group_zarr["data"] = (("time", "N", "E"), data)
+    group_zarr["data"] = ((channel_name, "N", "E"), data)
     group_zarr.to_zarr(file_path, mode="a")
     clean_up(file_path)
 
 
 def clean_up(file_path):
-    ds = xr.open_zarr(file_path, drop_variables=["reference_tmp", "count_tmp"])
+    ds = xr.open_zarr(file_path, drop_variables=["reference_tmp", "count_tmp", "tmp"])
     ds.to_zarr(file_path.replace(".zarr", "_tmp.zarr"))
     shutil.rmtree(file_path)
     shutil.move(file_path.replace(".zarr", "_tmp.zarr"), file_path)
 
 
-def get_dates(year, cube_path):
-    minicube = xr.open_dataset(cube_path, engine="h5netcdf")
-    missing_dates = check_missing_timestamps(minicube, 2017, 2023)
-    if missing_dates:
-        minicube = minicube.reindex(
-            time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
-        )
-    return minicube.time[(year - 2017) * 73:(year - 2016) * 73].values
+def get_dates():
+    return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def discretize_anomalies(data, threshold=0.1, missing_index=255):
+def discretize_anomalies(data, threshold=0.15, missing_index=255):
     data = da.where(data < -threshold, -1, data)
     data = da.where(data > threshold, 1, data)
-    data = data.fillna(missing_index - 1)
+    data = da.where((data >= -threshold) & (data <= threshold), 0, data)
+    data = da.where(da.isnan(data), missing_index - 1, data)
     data += 1
     return data.astype("uint8")
 
