@@ -148,14 +148,15 @@ def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mas
     dst_x, dst_y = np.meshgrid(sub_x, sub_y)
     dst_points = np.array([dst_y.ravel(), dst_x.ravel()]).T
 
-    subraster["forest_mask"] = (("N", "E"), griddata(src_points, mask_values, dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"])))
+    subraster["forest_mask"] = (("N", "E"), griddata(src_points, mask_values, dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"])))
 
     # Interpolate the patch data to fit the reference raster grid
     for i in range(patch.shape[0]):
-        resampled_patch = griddata(src_points, patch_values[i, :], dst_points, method='nearest').reshape((subraster.dims["N"], subraster.dims["E"]))
-        # Add resampled patch to reference raster
-        subraster["reference_tmp"][i, ...] += np.nan_to_num(resampled_patch)
-        subraster["count_tmp"][i, ...] += ~np.isnan(resampled_patch)
+        # griddata ignores NaN values
+        valid_mask = griddata(src_points, ~np.isnan(patch_values[i, :]), dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"]))
+        resampled_patch = griddata(src_points, np.nan_to_num(patch_values[i, :]), dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"]))
+        subraster["reference_tmp"][i, ...] += resampled_patch
+        subraster["count_tmp"][i, ...] += valid_mask
         
     subraster.to_zarr(filepath, region={"N": slice(max_y_idx, min_y_idx), "E": slice(min_x_idx, max_x_idx), channel_name: slice(0, subraster.dims[channel_name])})
 

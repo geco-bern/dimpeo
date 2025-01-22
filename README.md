@@ -14,9 +14,9 @@ pip install -e .
 
 First, define the following environment variables:
 ```
-CUBE_DIR=/data_2/dimpeo/cubes
-PROC_DIR=/data_2/scratch/$USER/processed
-SAVE_DIR=/data_2/scratch/$USER/output
+export CUBE_DIR=/data_2/dimpeo/cubes
+export PROC_DIR=/data_2/scratch/$USER/processed
+export SAVE_DIR=/data_2/scratch/$USER/output
 ```
 
 The code for the neural network approach is under `neural_network`. First, the dataset has to be extracted by running

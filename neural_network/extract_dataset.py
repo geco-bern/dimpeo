@@ -246,8 +246,18 @@ def extract_dataset(save_dir, cubes):
                 print("Done {} cubes".format(i))
 
 
+def compute_missingness(save_dir):
+    with h5py.File(os.path.join(save_dir, "nn_dataset.h5"), "r") as file:
+        ndvi = file.get("ndvi")[:]
+        
+    spl = np.concatenate(np.split(ndvi, (END_YEAR - START_YEAR + 1), axis=1), axis=0)
+    missingness = np.isnan(spl).sum(axis=0) / spl.shape[0]
+    np.save(os.path.join(save_dir, "missingness.py"), missingness)
+    
+
 if __name__ == "__main__":
 
     save_dir = os.environ["PROC_DIR"]
     cubes = glob.glob(os.path.join(os.environ["CUBE_DIR"], "*_raw.nc"))
     extract_dataset(save_dir, cubes)
+    compute_missingness(save_dir)
