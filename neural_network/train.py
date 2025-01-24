@@ -10,10 +10,11 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import d2_pinball_score
 
 from neural_network.mlp import MLP
+from neural_network.helpers import get_split_indices
 
 
-YEARS_IN_TRAIN = 6  # first six years in train, last year in test
-SPLIT_IDX = 73 * YEARS_IN_TRAIN
+YEARS_IN_TRAIN = [2017, 2018, 2019, 2020, 2021, 2022]
+YEARS_IN_TEST = [2023]
 T_SCALE = 1.0 / 365.0  # rescale target
 
 # rescale input (stats obtained from full dataset)
@@ -166,7 +167,7 @@ def objective_pinball(params, t, ndvi, nan_mask, alpha=0.5, weights=None):
     loss = torch.max(torch.mul(alpha, diff), torch.mul((alpha - 1), diff))
     # we need to reweight the quantiles to prevent a degenerate solution
     if weights is not None:
-        loss = loss * weights.repeat(YEARS_IN_TRAIN).unsqueeze(0)
+        loss = loss * weights.repeat(len(YEARS_IN_TRAIN)).unsqueeze(0)
     return torch.mean(loss[~nan_mask])
 
 
@@ -193,6 +194,9 @@ def train(name, data_path, features=None):
     loader = DataLoader(ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32)
 
     print("Using features: {}".format(ds.features))
+
+    train_indices = get_split_indices(YEARS_IN_TRAIN)
+    test_indices = get_split_indices(YEARS_IN_TEST)
 
     means_pt = torch.tensor([MEANS[f] for f in ds.features]).to(device).unsqueeze(0)
     stds_pt = torch.tensor([STDS[f] for f in ds.features]).to(device).unsqueeze(0)
@@ -228,9 +232,9 @@ def train(name, data_path, features=None):
             nan_mask = nan_mask | outlier_mask
 
             # separate into train/test
-            ndvi_train = ndvi[:, :SPLIT_IDX]
-            doy_train = doy[:, :SPLIT_IDX]
-            nan_mask_train = nan_mask[:, :SPLIT_IDX]
+            ndvi_train = ndvi[:, train_indices]
+            doy_train = doy[:, train_indices]
+            nan_mask_train = nan_mask[:, train_indices]
 
             inp = inp.float().to(device)
 

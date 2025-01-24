@@ -5,12 +5,10 @@ import h5py
 import numpy as np
 import itertools
 
-from neural_network.helpers import check_missing_timestamps, get_doy
+from neural_network.helpers import check_missing_timestamps, get_doy, START_YEAR, END_YEAR, NUM_DATAPOINTS_PER_YEAR
 
-H, W = 128, 128
-START_YEAR = 2017
-END_YEAR = 2023
-T = (END_YEAR - START_YEAR + 1) * 73
+
+T = (END_YEAR - START_YEAR + 1) * NUM_DATAPOINTS_PER_YEAR
 
 
 def cartesian_product(a, b):
@@ -39,11 +37,11 @@ def extract_dataset(save_dir, cubes):
             try:
                 minicube = xr.open_dataset(c, engine="h5netcdf")
             except OSError:
-                with open(os.path.join(save_dir, "failed_cubes_nn.txt"), "a") as f:
+                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
                     f.write(os.path.basename(c) + '\n')
                 continue
 
-            missing_dates = check_missing_timestamps(minicube, START_YEAR, END_YEAR)
+            missing_dates = check_missing_timestamps(minicube)
             if missing_dates:
                 minicube = minicube.reindex(
                     time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
@@ -52,7 +50,7 @@ def extract_dataset(save_dir, cubes):
             try:
                 s2_cube = minicube.s2_ndvi.where((minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])).values
             except AttributeError:
-                with open(os.path.join(save_dir, "failed_cubes_nn.txt"), "a") as f:
+                with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
                     f.write(os.path.basename(c) + '\n')
                 continue
             s2_mask = (minicube.FOREST_MASK.values > 0.8)
@@ -77,17 +75,17 @@ def extract_dataset(save_dir, cubes):
             # we need to take the mean and std without biasing it towards missing value
             # get first a mean annual curve, then take mean and std
             pressure = minicube.era5_sp.values[:, s2_mask]
-            annual_pressure = np.nanmean(np.reshape(pressure, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+            annual_pressure = np.nanmean(np.reshape(pressure, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
             pressure_mean = np.expand_dims(np.mean(annual_pressure, axis=0), axis=1)
             pressure_std = np.expand_dims(np.std(annual_pressure, axis=0), axis=1)
 
             temperature = minicube.era5_t2m.values[:, s2_mask]
-            annual_temperature = np.nanmean(np.reshape(temperature, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+            annual_temperature = np.nanmean(np.reshape(temperature, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
             temperature_mean = np.expand_dims(np.mean(annual_temperature, axis=0), axis=1)
             temperature_std = np.expand_dims(np.std(annual_temperature, axis=0), axis=1)
 
             precipitation = minicube.era5_tp.values[:, s2_mask]
-            annual_precipitation = np.nanmean(np.reshape(precipitation, (END_YEAR - START_YEAR + 1, 73, -1)), axis=0)
+            annual_precipitation = np.nanmean(np.reshape(precipitation, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
             precipitation_mean = np.expand_dims(np.mean(annual_precipitation, axis=0), axis=1)
             precipitation_std = np.expand_dims(np.std(annual_precipitation, axis=0), axis=1)
 

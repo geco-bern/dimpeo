@@ -10,6 +10,12 @@ import torch
 import torch.nn as nn
 
 
+START_YEAR = 2017
+END_YEAR = 2023
+NUM_DATAPOINTS_PER_YEAR = 73
+H, W = 128, 128
+
+
 def get_doy(dates):
     return np.array(
             [
@@ -20,7 +26,12 @@ def get_doy(dates):
     )
 
 
-def check_missing_timestamps(cube, start_year, end_year, max_conseq_dates=2):
+def get_split_indices(years):
+    indices = [np.arange((y - 2017) * NUM_DATAPOINTS_PER_YEAR, (y - 2016) * NUM_DATAPOINTS_PER_YEAR) for y in years]
+    return np.concatenate(indices, axis=0)
+
+
+def check_missing_timestamps(cube, max_conseq_dates=2):
     """Check for missing timestamps in cube.
 
     Args:
@@ -37,7 +48,7 @@ def check_missing_timestamps(cube, start_year, end_year, max_conseq_dates=2):
     current_timestamp = timestamps[0]
     while (current_timestamp - np.timedelta64(5, "D")).astype("datetime64[Y]").astype(
         int
-    ) + 1970 >= start_year:
+    ) + 1970 >= START_YEAR:
         current_timestamp -= np.timedelta64(5, "D")
         missing_dates.append(current_timestamp)
 
@@ -45,7 +56,7 @@ def check_missing_timestamps(cube, start_year, end_year, max_conseq_dates=2):
     current_timestamp = timestamps[-1]
     while (current_timestamp + np.timedelta64(5, "D")).astype("datetime64[Y]").astype(
         int
-    ) + 1970 <= end_year:
+    ) + 1970 <= END_YEAR:
         current_timestamp += np.timedelta64(5, "D")
         missing_dates.append(current_timestamp)
 
@@ -183,7 +194,8 @@ def group_by_month(data):
 
 
 @np.errstate(invalid='ignore')
-def consolidate(file_path, group_zarr, channel_name, channel_coords, post_processing=True):
+def consolidate(file_path, channel_name, channel_coords, post_processing=True, discretize=True):
+    group_zarr = xr.open_zarr(file_path)
     raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
     data = da.where(count != 0, raster / count, np.nan)
 
@@ -206,7 +218,10 @@ def consolidate(file_path, group_zarr, channel_name, channel_coords, post_proces
         # 1 = normal
         # 2 = positive anomaly
         # 255 = missing value
-        data = discretize_anomalies(smoothed_dask_data)
+        if discretize:
+            data = discretize_anomalies(smoothed_dask_data)
+        else:
+            data = smoothed_dask_data
 
     group_zarr["data"] = ((channel_name, "N", "E"), data)
     group_zarr.to_zarr(file_path, mode="a")
@@ -224,13 +239,12 @@ def get_dates():
     return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def discretize_anomalies(data, threshold=0.15, missing_index=255):
-    data = da.where(data < -threshold, -1, data)
-    data = da.where(data > threshold, 1, data)
-    data = da.where((data >= -threshold) & (data <= threshold), 0, data)
-    data = da.where(da.isnan(data), missing_index - 1, data)
-    data += 1
-    return data.astype("uint8")
+def discretize_anomalies(data, threshold=1.5, missing_index=255):
+    out = da.full(data.shape, fill_value=missing_index, dtype="uint8")
+    out = da.where(data < -threshold, 0, out)
+    out = da.where(data > threshold, 2, out)
+    out = da.where((data >= -threshold) & (data <= threshold), 1, out)
+    return out.rechunk(chunks=[-1, 2000, 2000])
 
 
 def convert_params(params):

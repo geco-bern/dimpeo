@@ -33,3 +33,10 @@ Finally, generate the .zarr file by running inference
 ```bash
 python neural_network/inference.py --name inf_exp --encoder-name encoder_train_exp.pt --features "dem,fc,fh,slope,easting,northing,twi,rugg,curv,press_mean,press_std,temp_mean,temp_std,precip_mean,precip_std"
 ```
+To fine-tune the anomaly threshold (currently 1.5, a good default value in the literature, yields around 5% anomalies) it might make sense to skip the discretization step by setting `discretize=False` as the argument to `consolidate()` in line 179 of `inference.py`. Afterwards, `discretize_anomalies` can be run manually with different thresholds.
+
+
+## TODO
+
+- Separate the pixels into a training and test dataset (spatially), to evaluate the spatial generalizability of the method.
+- Train models by holding out different years (not just 2023).
