@@ -5,8 +5,9 @@
 ```bash
 conda create -n dimpeo
 conda activate dimpeo
-conda install -c conda-forge numpy pandas scipy matplotlib notebook xarray h5netcdf tensorboard pyproj h5py dask scikit-learn
+conda install -c conda-forge numpy pandas scipy matplotlib notebook xarray h5netcdf tensorboard pyproj h5py dask scikit-learn folium
 conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
+pip install unfoldNd
 pip install -e .
 ```
 

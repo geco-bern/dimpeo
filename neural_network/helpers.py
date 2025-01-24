@@ -27,7 +27,7 @@ def get_doy(dates):
 
 
 def get_split_indices(years):
-    indices = [np.arange((y - START_YEAR) * NUM_DATAPOINTS_PER_YEAR, (y - START_YEAR - 1) * NUM_DATAPOINTS_PER_YEAR) for y in years]
+    indices = [np.arange((y - START_YEAR) * NUM_DATAPOINTS_PER_YEAR, (y - START_YEAR + 1) * NUM_DATAPOINTS_PER_YEAR) for y in years]
     return np.concatenate(indices, axis=0)
 
 
