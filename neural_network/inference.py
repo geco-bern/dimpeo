@@ -7,15 +7,12 @@ import xarray as xr
 import os
 
 from neural_network.mlp import MLP
-from neural_network.train import double_logistic_function, MEANS, STDS, T_SCALE
+from neural_network.train import double_logistic_function, MEANS, STDS, T_SCALE, YEARS_IN_TRAIN, YEARS_IN_TEST
 from neural_network.helpers import get_doy, check_missing_timestamps, create_reference_raster, project_patch, consolidate, get_dates, convert_params, get_split_indices, NUM_DATAPOINTS_PER_YEAR, START_YEAR, END_YEAR, H, W
 
 
-YEARS_IN_TRAIN = [2017, 2018, 2019, 2020, 2021, 2022]
-YEARS_IN_TEST = [2023]
-
-
 def rectify_parameters(params):
+    # this is necessary because the model is not identifiable (several parameter choices yield the same NDVI curve)
     # params: sos, mat_minus_sos, sen, eos_minus_sen, M, m
     inverted_mask = (params[:, 0] > params[:, 2])
 
