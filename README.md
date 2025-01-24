@@ -41,5 +41,6 @@ See `notebooks/open_zarr.ipynb` for a demo on how to open and use the zarr file.
 
 ## TODO
 
+- Retrain the model with more cubes (there are more extracted cubes now in `/data_2/dimpeo/cubes/out_failed`)
 - Separate the pixels into a training and test dataset (spatially), to evaluate the spatial generalizability of the method.
 - Train models by holding out different years (not just 2023).
