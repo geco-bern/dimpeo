@@ -35,6 +35,8 @@ python neural_network/inference.py --name inf_exp --encoder-name encoder_train_e
 ```
 To fine-tune the anomaly threshold (currently 1.5, a good default value in the literature, yields around 5% anomalies) it might make sense to skip the discretization step by setting `discretize=False` as the argument to `consolidate()` in line 179 of `inference.py`. Afterwards, `discretize_anomalies` can be run manually with different thresholds.
 
+See `notebooks/open_zarr.ipynb` for a demo on how to open and use the zarr file.
+
 
 ## TODO
 
