@@ -27,7 +27,7 @@ def rectify_parameters(params):
     return rec_params
 
 
-def inference(anoms_path, params_path, encoder_name, features):
+def inference(anoms_path, params_path, encoder_name, features, name, save_npy=False):
 
     filepaths = sorted(list(glob.glob(os.path.join(os.environ["CUBE_DIR"], "*_raw.nc"))))
     device = "cuda"
@@ -49,6 +49,12 @@ def inference(anoms_path, params_path, encoder_name, features):
 
     anom_dataset = create_reference_raster(filepath=anoms_path, channel_name="tmp", channel_coords=list(range(NUM_DATAPOINTS_PER_YEAR)))
     param_dataset = create_reference_raster(filepath=params_path, channel_name="layer", channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"])
+
+    if save_npy:
+        params_list = []
+        anoms_list = []
+        coords_list = []
+        forest_list = []
 
     for i, path in enumerate(filepaths):
         with torch.no_grad():
@@ -129,6 +135,12 @@ def inference(anoms_path, params_path, encoder_name, features):
 
             # taking the mean is only necessary for M and m, because the time parameters are shared
             params = (paramsl + paramsu) / 2
+
+            if save_npy:
+                params_map_save = torch.full((H, W, 6), torch.nan, device=device)
+                params_map_save[forest_mask, :] = params
+                params_list.append(params_map_save.cpu().numpy())
+
             params = convert_params(params)
 
             params_map = torch.full((4, H, W), torch.nan, device=device)
@@ -154,10 +166,26 @@ def inference(anoms_path, params_path, encoder_name, features):
             anomaly_score[ndvi_test < res_ndvi_lower_pred] = ((ndvi_test - res_ndvi_lower_pred) / iqr)[ndvi_test < res_ndvi_lower_pred]
             anomaly_score[(ndvi_test >= res_ndvi_lower_pred) & (ndvi_test <= res_ndvi_upper_pred)] = 0.0
 
+            if save_npy:
+                anoms_list.append(anomaly_score.cpu().numpy())
+                coords_list.append(np.array([lon_left, lon_right, lat_bottom, lat_top]))
+                forest_list.append(forest_mask.cpu().numpy())
+
             project_patch(anoms_path, lon_left, lon_right, lat_bottom, lat_top, anomaly_score.cpu().numpy(), forest_mask.cpu().numpy(), anom_dataset, channel_name="tmp", nx=W, ny=H)
 
         if (i + 1) % 100 == 0:
             print("done {}".format(i + 1))
+
+    if save_npy:
+        params_list = np.stack(params_list, axis=0)
+        anoms_list = np.stack(anoms_list, axis=0)
+        coords_list = np.stack(coords_list, axis=0)
+        forest_list = np.stack(forest_list, axis=0)
+
+        np.save(os.path.join(os.environ["SAVE_DIR"], f"parameters_{name}.npy"), params_list)
+        np.save(os.path.join(os.environ["SAVE_DIR"], f"anomalies_{name}.npy"), anoms_list)
+        np.save(os.path.join(os.environ["SAVE_DIR"], f"coords_{name}.npy"), coords_list)
+        np.save(os.path.join(os.environ["SAVE_DIR"], f"forest_mask_{name}.npy"), forest_list)
 
 
 if __name__ == "__main__":
@@ -171,8 +199,9 @@ if __name__ == "__main__":
     anoms_path = os.path.join(os.environ["SAVE_DIR"], f"anomalies_{args.name}.zarr")
     params_path = os.path.join(os.environ["SAVE_DIR"], f"parameters_{args.name}.zarr")
 
-    inference(anoms_path, params_path, args.encoder_name, args.features)
+    inference(anoms_path, params_path, args.encoder_name, args.features, args.name, save_npy=True)
 
-    consolidate(anoms_path, channel_name="time", channel_coords=get_dates(), post_processing=True, discretize=True)
+    # TODO: try use_median=True
+    consolidate(anoms_path, channel_name="time", channel_coords=get_dates(), post_processing=True, discretize=True, use_median=False)
     consolidate(params_path, channel_name="layer", channel_coords=["SOS", "EOS", "sNDVI", "wNDVI"], post_processing=False)
     

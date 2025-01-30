@@ -7,7 +7,7 @@ import h5py
 import numpy as np
 import xarray as xr
 
-from data.cloud_cleaning import smooth_s2_timeseries
+from .cloud_cleaning import smooth_s2_timeseries
 
 # SPLIT = "train"
 FOREST_THRESH = 0.8  # threshold of forest to consider to sample pixel

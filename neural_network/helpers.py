@@ -183,18 +183,21 @@ def apply_gaussian_filter(dask_data, sigma):
     return smoothed_data
 
 
-def group_by_month(data):
+def group_by_month(data, use_median=False):
     num_chunks = 12
     chunk_size = data.shape[0] // num_chunks
     # Split the data into 12 chunks using slicing 
     data_chunks = [data[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks - 1)]
     data_chunks.append(data[(num_chunks - 1) * chunk_size:])
-    means = [da.nanmean(chunk, axis=0) for chunk in data_chunks]
-    return da.stack(means, axis=0).rechunk(chunks=[-1, 2000, 2000])
+    if use_median:
+        avgs = [da.nanmedian(chunk, axis=0) for chunk in data_chunks]
+    else:
+        avgs = [da.nanmean(chunk, axis=0) for chunk in data_chunks]
+    return da.stack(avgs, axis=0).rechunk(chunks=[-1, 2000, 2000])
 
 
 @np.errstate(invalid='ignore')
-def consolidate(file_path, channel_name, channel_coords, post_processing=True, discretize=True):
+def consolidate(file_path, channel_name, channel_coords, post_processing=True, discretize=True, use_median=False):
     group_zarr = xr.open_zarr(file_path)
     raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
     data = da.where(count != 0, raster / count, np.nan)
@@ -211,7 +214,7 @@ def consolidate(file_path, channel_name, channel_coords, post_processing=True, d
         # smoothed_dask_data = apply_gaussian_filter(data, (time_sigma, space_sigma, space_sigma)).rechunk(20, 2000, 2000)
 
         # Instead, group by month
-        smoothed_dask_data = group_by_month(data)
+        smoothed_dask_data = group_by_month(data, use_median=use_median)
 
         # for anomalies:
         # 0 = negative anomaly
