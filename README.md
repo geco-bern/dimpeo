@@ -20,7 +20,7 @@ Then, define the following environment variables:
 ```bash
 conda env config vars set CUBE_DIR=/data_2/dimpeo/cubes SAVE_DIR=/data_2/scratch/$USER/dimpeo
 conda activate dimpeo
-makedirs -p $SAVE_DIR
+mkdir -p $SAVE_DIR
 ```
 `CUBE_DIR` contains the raw minicubes downloaded using the [GECO EarthNet Minicuber](https://github.com/geco-bern/earthnet-minicuber), `SAVE_DIR` points to the directory for saving outputs / checkpoints / etc.
 
