@@ -58,9 +58,27 @@ STDS = {
 }
 
 
-class H5Dataset():
+class H5Dataset:
 
-    all_features = ["lon", "lat", "dem", "fc", "fh", "slope", "easting", "northing", "twi", "rugg", "curv", "press_mean", "press_std", "temp_mean", "temp_std", "precip_mean", "precip_std"]
+    all_features = [
+        "lon",
+        "lat",
+        "dem",
+        "fc",
+        "fh",
+        "slope",
+        "easting",
+        "northing",
+        "twi",
+        "rugg",
+        "curv",
+        "press_mean",
+        "press_std",
+        "temp_mean",
+        "temp_std",
+        "precip_mean",
+        "precip_std",
+    ]
 
     def __init__(self, file_path, features=None):
         self.file_path = file_path
@@ -103,7 +121,9 @@ class H5Dataset():
             if "precip_std" in self.features:
                 self.precip_std_ds = file.get("precip_std")[:]
 
-        self.missingness = np.load(os.path.join(os.path.dirname(file_path), "missingness.npy"))
+        self.missingness = np.load(
+            os.path.join(os.path.dirname(file_path), "missingness.npy")
+        )
 
     def __getitem__(self, index):
         ndvi = self.ndvi_ds[index]
@@ -156,8 +176,12 @@ def double_logistic_function(t, params):
     sos, mat_minus_sos, sen, eos_minus_sen, M, m = torch.split(params, 1, dim=1)
     mat_minus_sos = nn.functional.softplus(mat_minus_sos)
     eos_minus_sen = nn.functional.softplus(eos_minus_sen)
-    sigmoid_sos_mat = nn.functional.sigmoid(-2 * (2 * sos + mat_minus_sos - 2 * t) / (mat_minus_sos + 1e-10))
-    sigmoid_sen_eos = nn.functional.sigmoid(-2 * (2 * sen + eos_minus_sen - 2 * t) / (eos_minus_sen + 1e-10))
+    sigmoid_sos_mat = nn.functional.sigmoid(
+        -2 * (2 * sos + mat_minus_sos - 2 * t) / (mat_minus_sos + 1e-10)
+    )
+    sigmoid_sen_eos = nn.functional.sigmoid(
+        -2 * (2 * sen + eos_minus_sen - 2 * t) / (eos_minus_sen + 1e-10)
+    )
     return (M - m) * (sigmoid_sos_mat - sigmoid_sen_eos) + m
 
 
@@ -180,7 +204,7 @@ def train(name, data_path, features=None):
     lr = 0.001
     lr_decay_rate = 0.01
     batch_size = 256
-    device = 'cuda'
+    device = "cuda"
 
     print("Starting model with:")
     print("name = {}".format(name))
@@ -191,7 +215,9 @@ def train(name, data_path, features=None):
     ds = H5Dataset(data_path, features)
     # load avg missingness as a function of DOY (73 entries in total)
     missingness = torch.from_numpy(ds.missingness).to(device)
-    loader = DataLoader(ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32)
+    loader = DataLoader(
+        ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32
+    )
 
     print("Using features: {}".format(ds.features))
 
@@ -202,18 +228,30 @@ def train(name, data_path, features=None):
     stds_pt = torch.tensor([STDS[f] for f in ds.features]).to(device).unsqueeze(0)
 
     # this model has ~470k parameters
-    encoder = MLP(d_in=len(ds.features), d_out=8, n_blocks=8, d_block=256, dropout=0, skip_connection=True).to(device)
+    encoder = MLP(
+        d_in=len(ds.features),
+        d_out=8,
+        n_blocks=8,
+        d_block=256,
+        dropout=0,
+        skip_connection=True,
+    ).to(device)
     # we don't care about overfitting --> weight decay not strictly necessary
-    bias_params = [p for name, p in encoder.named_parameters() if 'bias' in name]
-    others = [p for name, p in encoder.named_parameters() if 'bias' not in name]
-    optimizer = torch.optim.AdamW([
-                {'params': others},
-                {'params': bias_params, 'weight_decay': 0}
-            ], weight_decay=1e-4, lr=lr)
+    bias_params = [p for name, p in encoder.named_parameters() if "bias" in name]
+    others = [p for name, p in encoder.named_parameters() if "bias" not in name]
+    optimizer = torch.optim.AdamW(
+        [{"params": others}, {"params": bias_params, "weight_decay": 0}],
+        weight_decay=1e-4,
+        lr=lr,
+    )
 
     # in total we have 20314711 pixels, with 6 parameters per pixel
     # so technically the data has ~120 Mio degrees of freedom
-    print("Number of parameters: {}".format(sum(p.numel() for p in encoder.parameters() if p.requires_grad)))
+    print(
+        "Number of parameters: {}".format(
+            sum(p.numel() for p in encoder.parameters() if p.requires_grad)
+        )
+    )
     print("Starting training...")
 
     n_iterations = 0
@@ -221,7 +259,7 @@ def train(name, data_path, features=None):
     stop = False
     while True:
         print("Starting epoch {}".format(n_epochs + 1))
-        
+
         for sample in loader:
             ndvi, doy, inp = sample
 
@@ -248,12 +286,32 @@ def train(name, data_path, features=None):
             t_doy_train = doy_train.float().to(device) * T_SCALE
             t_nan_mask_train = nan_mask_train.to(device)
 
-            preds = encoder(inp.float()) # B x 8
+            preds = encoder(inp.float())  # B x 8
             paramsl = preds[:, [0, 1, 2, 3, 4, 5]]  # B x 6
-            paramsu = torch.cat([preds[:, [0, 1, 2, 3]], preds[:, [4, 5]] + nn.functional.softplus(preds[:, [6, 7]])], axis=1)
+            paramsu = torch.cat(
+                [
+                    preds[:, [0, 1, 2, 3]],
+                    preds[:, [4, 5]] + nn.functional.softplus(preds[:, [6, 7]]),
+                ],
+                axis=1,
+            )
 
-            lossl = objective_pinball(paramsl, t_doy_train, t_ndvi_train, t_nan_mask_train, alpha=0.25, weights=missingness)
-            lossu = objective_pinball(paramsu, t_doy_train, t_ndvi_train, t_nan_mask_train, alpha=0.75, weights=missingness)
+            lossl = objective_pinball(
+                paramsl,
+                t_doy_train,
+                t_ndvi_train,
+                t_nan_mask_train,
+                alpha=0.25,
+                weights=missingness,
+            )
+            lossu = objective_pinball(
+                paramsu,
+                t_doy_train,
+                t_ndvi_train,
+                t_nan_mask_train,
+                alpha=0.75,
+                weights=missingness,
+            )
             loss = lossl + lossu
 
             optimizer.zero_grad()
@@ -262,46 +320,81 @@ def train(name, data_path, features=None):
 
             new_lrate = lr * (lr_decay_rate ** (n_iterations / max_iterations))
             for param_group in optimizer.param_groups:
-                param_group['lr'] = new_lrate
+                param_group["lr"] = new_lrate
 
             if (n_iterations + 1) % 500 == 0:
                 writer.add_scalar("Loss/train", loss, n_iterations)
                 for pi, param_group in enumerate(optimizer.param_groups):
-                    writer.add_scalar("LearningRate[{}]".format(pi), param_group['lr'], n_iterations)
+                    writer.add_scalar(
+                        "LearningRate[{}]".format(pi), param_group["lr"], n_iterations
+                    )
 
             if (n_iterations + 1) % 1000 == 0:
                 with torch.no_grad():
                     fig, ax = plt.subplots(2, 2, figsize=(15, 6), sharey=True)
 
-                    t_fit = torch.linspace(0, 365, 1000).unsqueeze(0).repeat(paramsl.shape[0], 1)
-                    ndvi_lower = double_logistic_function(t_fit * T_SCALE, paramsl.cpu())
-                    ndvi_upper = double_logistic_function(t_fit * T_SCALE, paramsu.cpu())
+                    t_fit = (
+                        torch.linspace(0, 365, 1000)
+                        .unsqueeze(0)
+                        .repeat(paramsl.shape[0], 1)
+                    )
+                    ndvi_lower = double_logistic_function(
+                        t_fit * T_SCALE, paramsl.cpu()
+                    )
+                    ndvi_upper = double_logistic_function(
+                        t_fit * T_SCALE, paramsu.cpu()
+                    )
 
-                    random_indices = np.random.choice(np.arange(batch_size), size=4, replace=False)
+                    random_indices = np.random.choice(
+                        np.arange(batch_size), size=4, replace=False
+                    )
                     for pl_idx, bi in enumerate(random_indices):
                         row, col = divmod(pl_idx, 2)
                         masked_ndvi_train = ndvi_train[bi][~nan_mask_train[bi]]
                         masked_doy_train = doy_train[bi][~nan_mask_train[bi]]
-                        ax[row, col].scatter(masked_doy_train, masked_ndvi_train, label='Observed NDVI')
-                        ax[row, col].fill_between(t_fit[bi], ndvi_lower[bi], ndvi_upper[bi], alpha=0.2, color='red')
+                        ax[row, col].scatter(
+                            masked_doy_train, masked_ndvi_train, label="Observed NDVI"
+                        )
+                        ax[row, col].fill_between(
+                            t_fit[bi],
+                            ndvi_lower[bi],
+                            ndvi_upper[bi],
+                            alpha=0.2,
+                            color="red",
+                        )
                         ax[0, 0].set_ylabel("NDVI")
                         ax[1, 0].set_ylabel("NDVI")
 
                     writer.add_figure("Fit", fig, n_iterations)
 
-                    all_ndvi_lower = double_logistic_function(doy_train * T_SCALE, paramsl.cpu())
-                    all_ndvi_upper = double_logistic_function(doy_train * T_SCALE, paramsu.cpu())
+                    all_ndvi_lower = double_logistic_function(
+                        doy_train * T_SCALE, paramsl.cpu()
+                    )
+                    all_ndvi_upper = double_logistic_function(
+                        doy_train * T_SCALE, paramsu.cpu()
+                    )
                     all_masked_ndvi_lower = all_ndvi_lower[~nan_mask_train]
                     all_masked_ndvi_upper = all_ndvi_upper[~nan_mask_train]
                     all_masked_ndvi_train = ndvi_train[~nan_mask_train]
-                    d2_score_lower = d2_pinball_score(all_masked_ndvi_train, all_masked_ndvi_lower, alpha=0.25)
-                    d2_score_upper = d2_pinball_score(all_masked_ndvi_train, all_masked_ndvi_upper, alpha=0.75)
+                    d2_score_lower = d2_pinball_score(
+                        all_masked_ndvi_train, all_masked_ndvi_lower, alpha=0.25
+                    )
+                    d2_score_upper = d2_pinball_score(
+                        all_masked_ndvi_train, all_masked_ndvi_upper, alpha=0.75
+                    )
 
-                    writer.add_scalar("D2PinballScoreLower/train", d2_score_lower, n_iterations)
-                    writer.add_scalar("D2PinballScoreUpper/train", d2_score_upper, n_iterations)
+                    writer.add_scalar(
+                        "D2PinballScoreLower/train", d2_score_lower, n_iterations
+                    )
+                    writer.add_scalar(
+                        "D2PinballScoreUpper/train", d2_score_upper, n_iterations
+                    )
 
             if (n_iterations + 1) % 10000 == 0:
-                torch.save(encoder.state_dict(), os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt"))
+                torch.save(
+                    encoder.state_dict(),
+                    os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt"),
+                )
 
             n_iterations += 1
             if n_iterations >= max_iterations:
@@ -314,17 +407,27 @@ def train(name, data_path, features=None):
         n_epochs += 1
         writer.add_scalar("Epochs", n_epochs, n_iterations)
 
-    torch.save(encoder.state_dict(), os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt"))
+    torch.save(
+        encoder.state_dict(), os.path.join(os.environ["SAVE_DIR"], f"encoder_{name}.pt")
+    )
 
     writer.flush()
     writer.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser('DIMPEO Training')
-    parser.add_argument('-n', '--name', type=str, default="dimpeo_training")
-    parser.add_argument('--data-path', type=str, default=os.path.join(os.environ["PROC_DIR"], "nn_dataset.h5"))
-    parser.add_argument('--features', type=str)
+    parser = argparse.ArgumentParser("DIMPEO Training")
+    parser.add_argument("-n", "--name", type=str, default="dimpeo_training")
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=os.path.join(os.environ["SAVE_DIR"], "nn_dataset.h5"),
+    )
+    parser.add_argument(
+        "--features",
+        type=str,
+        default="dem,fc,fh,slope,easting,northing,twi,rugg,curv,press_mean,press_std,temp_mean,temp_std,precip_mean,precip_std",
+    )
     args = parser.parse_args()
 
     train(args.name, args.data_path, args.features)

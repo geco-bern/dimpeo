@@ -1,3 +1,4 @@
+import os
 import shutil
 import numpy as np
 import pandas as pd
@@ -18,16 +19,19 @@ H, W = 128, 128
 
 def get_doy(dates):
     return np.array(
-            [
-                pd.to_datetime(d).to_pydatetime().timetuple().tm_yday
-                for d in dates
-            ],
-            dtype=int,
+        [pd.to_datetime(d).to_pydatetime().timetuple().tm_yday for d in dates],
+        dtype=int,
     )
 
 
 def get_split_indices(years):
-    indices = [np.arange((y - START_YEAR) * NUM_DATAPOINTS_PER_YEAR, (y - START_YEAR + 1) * NUM_DATAPOINTS_PER_YEAR) for y in years]
+    indices = [
+        np.arange(
+            (y - START_YEAR) * NUM_DATAPOINTS_PER_YEAR,
+            (y - START_YEAR + 1) * NUM_DATAPOINTS_PER_YEAR,
+        )
+        for y in years
+    ]
     return np.concatenate(indices, axis=0)
 
 
@@ -83,7 +87,13 @@ def check_missing_timestamps(cube, max_conseq_dates=2):
     return missing_dates
 
 
-def create_reference_raster(filepath, channel_name, channel_coords, res=20, bounds=(2484000, 1075000, 2834000, 1296000)):
+def create_reference_raster(
+    filepath,
+    channel_name,
+    channel_coords,
+    res=20,
+    bounds=(2484000, 1075000, 2834000, 1296000),
+):
     """
     Create a reference raster with given dimensions and transformation.
     """
@@ -95,15 +105,19 @@ def create_reference_raster(filepath, channel_name, channel_coords, res=20, boun
     N_coords = np.linspace(bounds[3] - res // 2, bounds[1] + res // 2, height)
     E_coords = np.linspace(bounds[0] + res // 2, bounds[2] - res // 2, width)
 
-    reference_tmp = da.zeros((len(channel_coords), height, width), dtype="float32", chunks=(20, 2000, 2000))
-    count_tmp = da.zeros((len(channel_coords), height, width), dtype="uint16", chunks=(20, 2000, 2000))
+    reference_tmp = da.zeros(
+        (len(channel_coords), height, width), dtype="float32", chunks=(20, 2000, 2000)
+    )
+    count_tmp = da.zeros(
+        (len(channel_coords), height, width), dtype="uint16", chunks=(20, 2000, 2000)
+    )
     forest_mask_tmp = da.zeros((height, width), dtype="bool", chunks=(2000, 2000))
-    
+
     ds = xr.Dataset(
         {
             "reference_tmp": ((channel_name, "N", "E"), reference_tmp),
             "count_tmp": ((channel_name, "N", "E"), count_tmp),
-            "forest_mask": (("N", "E"), forest_mask_tmp)
+            "forest_mask": (("N", "E"), forest_mask_tmp),
         },
         coords={
             channel_name: channel_coords,
@@ -122,7 +136,19 @@ def create_reference_raster(filepath, channel_name, channel_coords, res=20, boun
     return ds
 
 
-def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mask, group_zarr, channel_name, nx=128, ny=128):
+def project_patch(
+    filepath,
+    lon_left,
+    lon_right,
+    lat_bottom,
+    lat_top,
+    patch,
+    mask,
+    group_zarr,
+    channel_name,
+    nx=128,
+    ny=128,
+):
     """
     Project and resample patch onto the reference raster.
     """
@@ -151,25 +177,43 @@ def project_patch(filepath, lon_left, lon_right, lat_bottom, lat_top, patch, mas
     max_x_idx = (group_zarr.coords["E"] > max_x_st).argmax().item() - 1
     min_y_idx = (group_zarr.coords["N"] < min_y_st).argmax().item() - 1
     max_y_idx = (group_zarr.coords["N"] <= max_y_st).argmax().item()
-    
-    subraster = group_zarr.isel(N=slice(max_y_idx, min_y_idx), E=slice(min_x_idx, max_x_idx))
+
+    subraster = group_zarr.isel(
+        N=slice(max_y_idx, min_y_idx), E=slice(min_x_idx, max_x_idx)
+    )
 
     sub_x = subraster.coords["E"].values
     sub_y = subraster.coords["N"].values
     dst_x, dst_y = np.meshgrid(sub_x, sub_y)
     dst_points = np.array([dst_y.ravel(), dst_x.ravel()]).T
 
-    subraster["forest_mask"] = (("N", "E"), griddata(src_points, mask_values, dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"])))
+    subraster["forest_mask"] = (
+        ("N", "E"),
+        griddata(src_points, mask_values, dst_points, method="nearest").reshape(
+            (subraster.dims["N"], subraster.dims["E"])
+        ),
+    )
 
     # Interpolate the patch data to fit the reference raster grid
     for i in range(patch.shape[0]):
         # griddata ignores NaN values
-        valid_mask = griddata(src_points, ~np.isnan(patch_values[i, :]), dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"]))
-        resampled_patch = griddata(src_points, np.nan_to_num(patch_values[i, :]), dst_points, method="nearest").reshape((subraster.dims["N"], subraster.dims["E"]))
+        valid_mask = griddata(
+            src_points, ~np.isnan(patch_values[i, :]), dst_points, method="nearest"
+        ).reshape((subraster.dims["N"], subraster.dims["E"]))
+        resampled_patch = griddata(
+            src_points, np.nan_to_num(patch_values[i, :]), dst_points, method="nearest"
+        ).reshape((subraster.dims["N"], subraster.dims["E"]))
         subraster["reference_tmp"][i, ...] += resampled_patch
         subraster["count_tmp"][i, ...] += valid_mask
-        
-    subraster.to_zarr(filepath, region={"N": slice(max_y_idx, min_y_idx), "E": slice(min_x_idx, max_x_idx), channel_name: slice(0, subraster.dims[channel_name])})
+
+    subraster.to_zarr(
+        filepath,
+        region={
+            "N": slice(max_y_idx, min_y_idx),
+            "E": slice(min_x_idx, max_x_idx),
+            channel_name: slice(0, subraster.dims[channel_name]),
+        },
+    )
 
 
 def apply_gaussian_filter(dask_data, sigma):
@@ -186,9 +230,11 @@ def apply_gaussian_filter(dask_data, sigma):
 def group_by_month(data, use_median=False):
     num_chunks = 12
     chunk_size = data.shape[0] // num_chunks
-    # Split the data into 12 chunks using slicing 
-    data_chunks = [data[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks - 1)]
-    data_chunks.append(data[(num_chunks - 1) * chunk_size:])
+    # Split the data into 12 chunks using slicing
+    data_chunks = [
+        data[i * chunk_size : (i + 1) * chunk_size] for i in range(num_chunks - 1)
+    ]
+    data_chunks.append(data[(num_chunks - 1) * chunk_size :])
     if use_median:
         avgs = [da.nanmedian(chunk, axis=0) for chunk in data_chunks]
     else:
@@ -196,8 +242,15 @@ def group_by_month(data, use_median=False):
     return da.stack(avgs, axis=0).rechunk(chunks=[-1, 2000, 2000])
 
 
-@np.errstate(invalid='ignore')
-def consolidate(file_path, channel_name, channel_coords, post_processing=True, discretize=True, use_median=False):
+@np.errstate(invalid="ignore")
+def consolidate(
+    file_path,
+    channel_name,
+    channel_coords,
+    gaussian_smoothing=False,
+    group_by_month=False,
+    discretize=False,
+):
     group_zarr = xr.open_zarr(file_path)
     raster, count = group_zarr["reference_tmp"], group_zarr["count_tmp"]
     data = da.where(count != 0, raster / count, np.nan)
@@ -205,26 +258,26 @@ def consolidate(file_path, channel_name, channel_coords, post_processing=True, d
     if not channel_name in group_zarr.coords:
         group_zarr = group_zarr.assign_coords({channel_name: channel_coords})
 
-    if post_processing:
+    if gaussian_smoothing:
         # Define the sigmas for Gaussian smoothing
-        # space_sigma = 50
-        # time_sigma = 3
-
+        space_sigma = 50
+        time_sigma = 3
         # Apply Gaussian smoothing using Dask
-        # smoothed_dask_data = apply_gaussian_filter(data, (time_sigma, space_sigma, space_sigma)).rechunk(20, 2000, 2000)
+        data = apply_gaussian_filter(
+            data, (time_sigma, space_sigma, space_sigma)
+        ).rechunk(20, 2000, 2000)
 
-        # Instead, group by month
-        smoothed_dask_data = group_by_month(data, use_median=use_median)
+    if group_by_month:
+        use_median = True
+        data = group_by_month(data, use_median=use_median)
 
-        # for anomalies:
-        # 0 = negative anomaly
-        # 1 = normal
-        # 2 = positive anomaly
-        # 255 = missing value
-        if discretize:
-            data = discretize_anomalies(smoothed_dask_data)
-        else:
-            data = smoothed_dask_data
+    # for anomalies:
+    # 0 = negative anomaly
+    # 1 = normal
+    # 2 = positive anomaly
+    # 255 = missing value
+    if discretize:
+        data = discretize_anomalies(data)
 
     group_zarr["data"] = ((channel_name, "N", "E"), data)
     group_zarr.to_zarr(file_path, mode="a")
@@ -238,8 +291,48 @@ def clean_up(file_path):
     shutil.move(file_path.replace(".zarr", "_tmp.zarr"), file_path)
 
 
-def get_dates():
-    return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+def get_dates(years_in_test):
+    # TODO: fix this function
+    # currently I'm picking the dates from a random cube and use those uniformly for all pixels
+    # there should be a canonical set of predefined dates
+    minicube = xr.open_dataset(
+        os.path.join(
+            os.environ["CUBE_DIR"],
+            "2017_1_10_2023_12_30_7.212724933477382_46.627329370567224_128_128_raw.nc",
+        ),
+        engine="h5netcdf",
+    )
+    missing_dates = check_missing_timestamps(minicube)
+    if missing_dates:
+        minicube = minicube.reindex(
+            time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
+        )
+    
+    out = []
+    for year in years_in_test:
+        out.append(minicube.time[
+            (year - START_YEAR)
+            * NUM_DATAPOINTS_PER_YEAR : (year - START_YEAR + 1)
+            * NUM_DATAPOINTS_PER_YEAR
+        ].values)
+    return np.concatenate(out, axis=0)
+
+
+def get_months():
+    return [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ]
 
 
 def discretize_anomalies(data, threshold=1.5, missing_index=255):
@@ -247,7 +340,7 @@ def discretize_anomalies(data, threshold=1.5, missing_index=255):
     out = da.where(data < -threshold, 0, out)
     out = da.where(data > threshold, 2, out)
     out = da.where((data >= -threshold) & (data <= threshold), 1, out)
-    return out.rechunk(chunks=[-1, 2000, 2000])
+    return out.rechunk(chunks=[min(out.shape[0], 20), 2000, 2000])
 
 
 def convert_params(params):

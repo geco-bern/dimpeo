@@ -30,7 +30,7 @@ class MLP(nn.Module):
             skip_connection: add skip connection.
         """
         if n_blocks <= 0:
-            raise ValueError(f'n_blocks must be positive, however: {n_blocks=}')
+            raise ValueError(f"n_blocks must be positive, however: {n_blocks=}")
 
         if skip_connection:
             assert n_blocks > 1
@@ -41,24 +41,27 @@ class MLP(nn.Module):
             if i == 0:
                 blocks.append(
                     _named_sequential(
-                        ('linear', nn.Linear(d_in, d_block)),
-                        ('activation', nn.ReLU()),
-                        ('dropout', nn.Dropout(dropout)),
-                ))
+                        ("linear", nn.Linear(d_in, d_block)),
+                        ("activation", nn.ReLU()),
+                        ("dropout", nn.Dropout(dropout)),
+                    )
+                )
             elif skip_connection and (i == n_blocks // 2):
                 blocks.append(
                     _named_sequential(
-                        ('linear', nn.Linear(d_block + d_in, d_block)),
-                        ('activation', nn.ReLU()),
-                        ('dropout', nn.Dropout(dropout)),
-                ))
+                        ("linear", nn.Linear(d_block + d_in, d_block)),
+                        ("activation", nn.ReLU()),
+                        ("dropout", nn.Dropout(dropout)),
+                    )
+                )
             else:
                 blocks.append(
                     _named_sequential(
-                        ('linear', nn.Linear(d_block, d_block)),
-                        ('activation', nn.ReLU()),
-                        ('dropout', nn.Dropout(dropout)),
-                ))
+                        ("linear", nn.Linear(d_block, d_block)),
+                        ("activation", nn.ReLU()),
+                        ("dropout", nn.Dropout(dropout)),
+                    )
+                )
         self.blocks = nn.ModuleList(blocks)
         self.output = None if d_out is None else nn.Linear(d_block, d_out)
         self.skip_connection = skip_connection

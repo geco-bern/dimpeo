@@ -8,8 +8,7 @@ setup(
     description="",
     author="brdav",
     author_email="",
-    # REPLACE WITH YOUR OWN GITHUB PROJECT LINK
-    url="",
+    url="https://github.com/brdav/DIMPEO",
     install_requires=[""],
     packages=find_packages(),
 )

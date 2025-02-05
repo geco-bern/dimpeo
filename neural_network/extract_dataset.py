@@ -5,7 +5,13 @@ import h5py
 import numpy as np
 import itertools
 
-from neural_network.helpers import check_missing_timestamps, get_doy, START_YEAR, END_YEAR, NUM_DATAPOINTS_PER_YEAR
+from neural_network.helpers import (
+    check_missing_timestamps,
+    get_doy,
+    START_YEAR,
+    END_YEAR,
+    NUM_DATAPOINTS_PER_YEAR,
+)
 
 
 T = (END_YEAR - START_YEAR + 1) * NUM_DATAPOINTS_PER_YEAR
@@ -25,6 +31,7 @@ def create_h5(file, key, data, shape, dtype, chunk_size=None):
         chunks=chunk_size,
     )
 
+
 def append_h5(file, key, data):
     file[key].resize((file[key].shape[0] + data.shape[0]), axis=0)
     file[key][-data.shape[0] :] = data
@@ -38,7 +45,7 @@ def extract_dataset(save_dir, cubes):
                 minicube = xr.open_dataset(c, engine="h5netcdf")
             except OSError:
                 with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
-                    f.write(os.path.basename(c) + '\n')
+                    f.write(os.path.basename(c) + "\n")
                 continue
 
             missing_dates = check_missing_timestamps(minicube)
@@ -48,18 +55,22 @@ def extract_dataset(save_dir, cubes):
                 )
 
             try:
-                s2_cube = minicube.s2_ndvi.where((minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])).values
+                s2_cube = minicube.s2_ndvi.where(
+                    (minicube.s2_mask == 0) & minicube.s2_SCL.isin([1, 2, 4, 5, 6, 7])
+                ).values
             except AttributeError:
                 with open(os.path.join(save_dir, "failed_cubes.txt"), "a") as f:
-                    f.write(os.path.basename(c) + '\n')
+                    f.write(os.path.basename(c) + "\n")
                 continue
-            s2_mask = (minicube.FOREST_MASK.values > 0.8)
-            
+            s2_mask = minicube.FOREST_MASK.values > 0.8
+
             pixels = s2_cube[:, s2_mask].transpose(1, 0)
 
             longitude = np.array(minicube.lon.values, dtype=np.float32)
             latitude = np.array(minicube.lat.values, dtype=np.float32)
-            lon_lat = cartesian_product(longitude, latitude).reshape(len(longitude), len(latitude), 2)
+            lon_lat = cartesian_product(longitude, latitude).reshape(
+                len(longitude), len(latitude), 2
+            )
             lon_lat = lon_lat[s2_mask, :]
 
             dem = np.expand_dims(minicube.DEM.values[s2_mask], axis=1)
@@ -75,23 +86,48 @@ def extract_dataset(save_dir, cubes):
             # we need to take the mean and std without biasing it towards missing value
             # get first a mean annual curve, then take mean and std
             pressure = minicube.era5_sp.values[:, s2_mask]
-            annual_pressure = np.nanmean(np.reshape(pressure, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
+            annual_pressure = np.nanmean(
+                np.reshape(
+                    pressure, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)
+                ),
+                axis=0,
+            )
             pressure_mean = np.expand_dims(np.mean(annual_pressure, axis=0), axis=1)
             pressure_std = np.expand_dims(np.std(annual_pressure, axis=0), axis=1)
 
             temperature = minicube.era5_t2m.values[:, s2_mask]
-            annual_temperature = np.nanmean(np.reshape(temperature, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
-            temperature_mean = np.expand_dims(np.mean(annual_temperature, axis=0), axis=1)
+            annual_temperature = np.nanmean(
+                np.reshape(
+                    temperature,
+                    (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1),
+                ),
+                axis=0,
+            )
+            temperature_mean = np.expand_dims(
+                np.mean(annual_temperature, axis=0), axis=1
+            )
             temperature_std = np.expand_dims(np.std(annual_temperature, axis=0), axis=1)
 
             precipitation = minicube.era5_tp.values[:, s2_mask]
-            annual_precipitation = np.nanmean(np.reshape(precipitation, (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1)), axis=0)
-            precipitation_mean = np.expand_dims(np.mean(annual_precipitation, axis=0), axis=1)
-            precipitation_std = np.expand_dims(np.std(annual_precipitation, axis=0), axis=1)
+            annual_precipitation = np.nanmean(
+                np.reshape(
+                    precipitation,
+                    (END_YEAR - START_YEAR + 1, NUM_DATAPOINTS_PER_YEAR, -1),
+                ),
+                axis=0,
+            )
+            precipitation_mean = np.expand_dims(
+                np.mean(annual_precipitation, axis=0), axis=1
+            )
+            precipitation_std = np.expand_dims(
+                np.std(annual_precipitation, axis=0), axis=1
+            )
 
             N = pixels.shape[0]
 
-            doy = np.expand_dims(get_doy(minicube.time.values), axis=0).repeat(N, axis=0)
+            doy = np.expand_dims(get_doy(minicube.time.values), axis=0).repeat(
+                N, axis=0
+            )
 
             if not "ndvi" in h5_file.keys():
                 create_h5(
@@ -247,15 +283,15 @@ def extract_dataset(save_dir, cubes):
 def compute_missingness(save_dir):
     with h5py.File(os.path.join(save_dir, "nn_dataset.h5"), "r") as file:
         ndvi = file.get("ndvi")[:]
-        
+
     spl = np.concatenate(np.split(ndvi, (END_YEAR - START_YEAR + 1), axis=1), axis=0)
     missingness = np.isnan(spl).sum(axis=0) / spl.shape[0]
     np.save(os.path.join(save_dir, "missingness.py"), missingness)
-    
+
 
 if __name__ == "__main__":
 
-    save_dir = os.environ["PROC_DIR"]
+    save_dir = os.environ["SAVE_DIR"]
     cubes = glob.glob(os.path.join(os.environ["CUBE_DIR"], "*_raw.nc"))
     extract_dataset(save_dir, cubes)
     compute_missingness(save_dir)
