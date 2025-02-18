@@ -10,7 +10,7 @@ First create a conda environment and install the necessary packages:
 ```bash
 conda create -n dimpeo python=3.12
 conda activate dimpeo
-conda install -c conda-forge numpy pandas scipy matplotlib notebook xarray h5netcdf tensorboard pyproj h5py dask scikit-learn folium dask_image zarr
+conda install -c conda-forge numpy pandas scipy matplotlib notebook xarray h5netcdf tensorboard pyproj h5py dask scikit-learn folium dask-image zarr
 conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
 pip install unfoldNd
 pip install -e .
