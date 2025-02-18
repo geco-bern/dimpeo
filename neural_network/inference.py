@@ -107,6 +107,12 @@ def inference(anoms_path, params_path, encoder_path, features, name, save_npy=Fa
         filepath=anoms_path,
         channel_name="tmp",
         channel_coords=list(range(NUM_DATAPOINTS_PER_YEAR * len(YEARS_IN_TEST))),
+        metadata={
+            "negative_anomaly_id": 0,
+            "normal_id": 1,
+            "positive_anomaly_id": 2,
+            "missing_id": 255,
+        },
     )
     param_dataset = create_reference_raster(
         filepath=params_path,

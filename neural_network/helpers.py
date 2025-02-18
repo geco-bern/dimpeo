@@ -15,6 +15,7 @@ START_YEAR = 2017
 END_YEAR = 2023
 NUM_DATAPOINTS_PER_YEAR = 73
 H, W = 128, 128
+CHUNK_SIZE = 500
 
 
 def get_doy(dates):
@@ -93,6 +94,7 @@ def create_reference_raster(
     channel_coords,
     res=20,
     bounds=(2484000, 1075000, 2834000, 1296000),
+    metadata=None,
 ):
     """
     Create a reference raster with given dimensions and transformation.
@@ -106,12 +108,18 @@ def create_reference_raster(
     E_coords = np.linspace(bounds[0] + res // 2, bounds[2] - res // 2, width)
 
     reference_tmp = da.zeros(
-        (len(channel_coords), height, width), dtype="float32", chunks=(20, 2000, 2000)
+        (len(channel_coords), height, width),
+        dtype="float32",
+        chunks=(-1, CHUNK_SIZE, CHUNK_SIZE),
     )
     count_tmp = da.zeros(
-        (len(channel_coords), height, width), dtype="uint16", chunks=(20, 2000, 2000)
+        (len(channel_coords), height, width),
+        dtype="uint16",
+        chunks=(-1, CHUNK_SIZE, CHUNK_SIZE),
     )
-    forest_mask_tmp = da.zeros((height, width), dtype="bool", chunks=(2000, 2000))
+    forest_mask_tmp = da.zeros(
+        (height, width), dtype="bool", chunks=(CHUNK_SIZE, CHUNK_SIZE)
+    )
 
     ds = xr.Dataset(
         {
@@ -127,10 +135,9 @@ def create_reference_raster(
     )
 
     ds.attrs["crs"] = "EPSG:2056"
-    ds.attrs["negative_anomaly_id"] = 0
-    ds.attrs["normal_id"] = 1
-    ds.attrs["positive_anomaly_id"] = 2
-    ds.attrs["missing_id"] = 255
+    if metadata is not None:
+        for key, value in metadata.items():
+            ds.attrs[key] = value
 
     ds.to_zarr(filepath, compute=True)
     return ds
@@ -151,6 +158,7 @@ def project_patch(
 ):
     """
     Project and resample patch onto the reference raster.
+    Note: this function is not parallelizable!
     """
     lon_grid = np.linspace(lon_left, lon_right, nx)
     lat_grid = np.linspace(lat_top, lat_bottom, ny)
@@ -213,6 +221,7 @@ def project_patch(
             "E": slice(min_x_idx, max_x_idx),
             channel_name: slice(0, subraster.dims[channel_name]),
         },
+        safe_chunks=False,
     )
 
 
@@ -239,7 +248,7 @@ def group_by_month(data, use_median=False):
         avgs = [da.nanmedian(chunk, axis=0) for chunk in data_chunks]
     else:
         avgs = [da.nanmean(chunk, axis=0) for chunk in data_chunks]
-    return da.stack(avgs, axis=0).rechunk(chunks=[-1, 2000, 2000])
+    return da.stack(avgs, axis=0).rechunk(chunks=[-1, CHUNK_SIZE, CHUNK_SIZE])
 
 
 @np.errstate(invalid="ignore")
@@ -265,17 +274,12 @@ def consolidate(
         # Apply Gaussian smoothing using Dask
         data = apply_gaussian_filter(
             data, (time_sigma, space_sigma, space_sigma)
-        ).rechunk(20, 2000, 2000)
+        ).rechunk(-1, CHUNK_SIZE, CHUNK_SIZE)
 
     if group_by_month:
         use_median = True
         data = group_by_month(data, use_median=use_median)
 
-    # for anomalies:
-    # 0 = negative anomaly
-    # 1 = normal
-    # 2 = positive anomaly
-    # 255 = missing value
     if discretize:
         data = discretize_anomalies(data)
 
@@ -307,14 +311,16 @@ def get_dates(years_in_test):
         minicube = minicube.reindex(
             time=np.sort(np.concatenate([minicube.time.values, missing_dates]))
         )
-    
+
     out = []
     for year in years_in_test:
-        out.append(minicube.time[
-            (year - START_YEAR)
-            * NUM_DATAPOINTS_PER_YEAR : (year - START_YEAR + 1)
-            * NUM_DATAPOINTS_PER_YEAR
-        ].values)
+        out.append(
+            minicube.time[
+                (year - START_YEAR)
+                * NUM_DATAPOINTS_PER_YEAR : (year - START_YEAR + 1)
+                * NUM_DATAPOINTS_PER_YEAR
+            ].values
+        )
     return np.concatenate(out, axis=0)
 
 
@@ -340,7 +346,7 @@ def discretize_anomalies(data, threshold=1.5, missing_index=255):
     out = da.where(data < -threshold, 0, out)
     out = da.where(data > threshold, 2, out)
     out = da.where((data >= -threshold) & (data <= threshold), 1, out)
-    return out.rechunk(chunks=[min(out.shape[0], 20), 2000, 2000])
+    return out.rechunk(chunks=[out.shape[0], CHUNK_SIZE, CHUNK_SIZE])
 
 
 def convert_params(params):
