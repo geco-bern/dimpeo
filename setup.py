@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from setuptools import find_packages, setup
+from setuptools import find_namespace_packages, setup
 
 setup(
     name="dimpeo",
@@ -10,5 +10,5 @@ setup(
     author_email="",
     url="https://github.com/brdav/DIMPEO",
     install_requires=[""],
-    packages=find_packages(),
+    packages=find_namespace_packages(),
 )
