@@ -147,37 +147,33 @@ with h5py.File("/data_2/scratch/sbiegel/processed/new_ndvi_timeseries.h5", "w") 
         # Read the NDVI bands and masks
         with rasterio.open(bands_asset.href) as bands_src, rasterio.open(masks_asset.href) as masks_src:
 
-            if not (bands_src.transform == masks_src.transform and bands_src.bounds == masks_src.bounds):
+            if not ((bands_src.transform == masks_src.transform) and (bands_src.width, bands_src.height) == (masks_src.width, masks_src.height)):
                 # Handle the case where masks and bands are not aligned
-                print("Transforms or bounds do not match between bands and masks assets for time step", t)
+                print("Warning: Transforms or dimensions do not match between bands and masks assets for time step", t)
                 # If the transforms or bounds do not match, we need to sample the entire window
                 # to ensure we get the same area for both bands and masks.
                 band_window = from_bounds(*bbox_swisstopo_2056, transform=bands_src.transform)
                 mask_window = from_bounds(*bbox_swisstopo_2056, transform=masks_src.transform)
-                red = bands_src.read(1, window=band_window, boundless=True, fill_value=9999)
-                nir = bands_src.read(4, window=band_window, boundless=True, fill_value=9999)
-                terrain_mask = masks_src.read(1, window=mask_window, boundless=True, fill_value=255).astype("uint8")
-                cloud_mask = masks_src.read(2, window=mask_window, boundless=True, fill_value=255).astype("uint8")
+                red, nir = bands_src.read([1, 4], window=band_window, boundless=True, fill_value=9999)
+                masks = masks_src.read([1, 2], window=mask_window, boundless=True, fill_value=255).astype("uint8")
+                terrain_mask, cloud_mask = masks
             else:
                 # Standard case: masks and bands are aligned
                 window = bands_src.window(*bbox_swisstopo_2056)
-                red = bands_src.read(1, window=window)
-                nir = bands_src.read(4, window=window)
-                terrain_mask = masks_src.read(1, window=window).astype("uint8")
-                cloud_mask = masks_src.read(2, window=window).astype("uint8")
+                red, nir = bands_src.read([1, 4], window=window)
+                masks = masks_src.read([1, 2], window=window).astype("uint8")
+                terrain_mask, cloud_mask = masks
 
+        # Create masks for cloud shadows and nodata
+        cloud_shadows_mask = (terrain_mask == 100) | (cloud_mask == 1)
+        nodata_mask = (red == 9999) | (nir == 9999) | (terrain_mask == 255) | (cloud_mask == 255)
+        
         # Calculate NDVI
-        nodata_red = red == 9999 
         red = red.astype("float32") / 10000.0
-        nodata_nir = nir == 9999
         nir = nir.astype("float32") / 10000.0
         ndvi = (nir - red) / (nir + red)
         ndvi = np.clip(ndvi, -1.0, 1.0)
         ndvi_scaled = (ndvi * 10000.0).astype("int16")
-
-        # Create masks for cloud shadows and nodata
-        cloud_shadows_mask = (terrain_mask == 100) | (cloud_mask == 1)
-        nodata_mask = nodata_red | nodata_nir | (terrain_mask == 255) | (cloud_mask == 255)
 
         # Compute window offset in the reference raster grid (forest mask)
         # This is the area of the reference raster that corresponds to the current bands raster
@@ -195,8 +191,16 @@ with h5py.File("/data_2/scratch/sbiegel/processed/new_ndvi_timeseries.h5", "w") 
         global_flat = global_rows * width_swisstopo + global_cols
         # Get the corresponding flat indices (column indices) in the index map
         current_flat_indices = index_map[global_flat]
-        
-        # Assign final NDVI values
-        ndvi_scaled[cloud_shadows_mask] = NDVI_INVALID
-        ndvi_scaled[nodata_mask] = NDVI_NO_COVERAGE
-        ndvi_ds[t, current_flat_indices] = ndvi_scaled[local_rows, local_cols]
+
+        # Get flat NDVI and masks for the current time step
+        ndvi_flat = ndvi_scaled[local_rows, local_cols]
+        cloud_shadows_mask_flat = cloud_shadows_mask[local_rows, local_cols]
+        nodata_mask_flat = nodata_mask[local_rows, local_cols]
+
+        # Prepare the NDVI row for the current time step
+        ndvi_row = np.full(N, NDVI_NO_COVERAGE, dtype="int16")
+        valid = ~(cloud_shadows_mask_flat | nodata_mask_flat)
+        cloud_only = cloud_shadows_mask_flat & ~nodata_mask_flat
+        ndvi_row[current_flat_indices[valid]] = ndvi_flat[valid]
+        ndvi_row[current_flat_indices[cloud_only]] = NDVI_INVALID
+        ndvi_ds[t] = ndvi_row
