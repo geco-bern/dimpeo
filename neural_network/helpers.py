@@ -351,6 +351,8 @@ def discretize_anomalies(data, threshold=1.5, missing_index=255):
 
 def convert_params(params):
     sos = params[:, 0]
+    # mat = params[:, 0] + nn.functional.softplus(params[:, 1])
+    # sen = params[:, 2]
     eos = params[:, 2] + nn.functional.softplus(params[:, 3])
     sndvi = params[:, 4]
     wndvi = params[:, 5]
