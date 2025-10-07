@@ -20,8 +20,6 @@ from neural_network.dataset import ZarrDataset, MEANS, STDS
 T_SCALE = 1.0 / 365.0  # rescale target
 
 
-
-
 def double_logistic_function(t, params):
     sos, mat_minus_sos, sen, eos_minus_sen, M, m = torch.split(params, 1, dim=1)
     mat_minus_sos = nn.functional.softplus(mat_minus_sos)
@@ -67,12 +65,8 @@ def train(name, data_path, features=None):
     if isinstance(features, str):
         features = features.split(",")
     ds = ZarrDataset(data_path, features)
-    # load avg missingness as a function of DOY (73 entries in total)
     missingness = ds.missingness
     missingness = torch.from_numpy(missingness).to(device)
-    # loader = DataLoader(
-    #     ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=32
-    # )
 
     sampler = RandomSampler(ds, replacement=True, num_samples=batch_size * max_batches_per_epoch)
 
@@ -88,9 +82,6 @@ def train(name, data_path, features=None):
 
     print("Using features: {}".format(ds.features))
 
-    # train_indices = get_split_indices(YEARS_IN_TRAIN)
-    # test_indices = get_split_indices(YEARS_IN_TEST)
-
     means_pt = torch.tensor([MEANS[f] for f in ds.num_features]).unsqueeze(0)
     stds_pt = torch.tensor([STDS[f] for f in ds.num_features]).unsqueeze(0)
 
@@ -98,7 +89,7 @@ def train(name, data_path, features=None):
     nr_species = ds.nr_tree_species
     nr_habitats = ds.nr_habitats
 
-    # this model has ~470k parameters
+    # this model has ~475k parameters
     encoder = MLPWithEmbeddings(
         d_num=nr_num_features,
         d_out=8,
@@ -112,7 +103,6 @@ def train(name, data_path, features=None):
         habitat_emb_dim=8,
     ).to(device)
 
-    # we don't care about overfitting --> weight decay not strictly necessary
     bias_params = [p for name, p in encoder.named_parameters() if "bias" in name]
     others = [p for name, p in encoder.named_parameters() if "bias" not in name]
     optimizer = torch.optim.AdamW(
@@ -121,8 +111,6 @@ def train(name, data_path, features=None):
         lr=lr,
     )
 
-    # in total we have 20314711 pixels, with 6 parameters per pixel
-    # so technically the data has ~120 Mio degrees of freedom
     print(
         "Number of parameters: {}".format(
             sum(p.numel() for p in encoder.parameters() if p.requires_grad)
@@ -137,17 +125,14 @@ def train(name, data_path, features=None):
         print("Starting epoch {}".format(n_epochs + 1))
 
         for sample in tqdm(loader):
-            ndvi, feat = sample
+            ndvi, ndsi, feat = sample
 
             nan_mask = torch.isnan(ndvi) | (ndvi == -2**15) | (ndvi == 2**15 - 1)
             ndvi = ndvi.float() / 10000.0
+            ndsi = ndsi.float() / 10000.0
+            snow_mask = (ndsi > 0.43) & (ndsi < 1.0)
             outlier_mask = (ndvi > 1) | (ndvi < -0.1)
-            nan_mask = nan_mask | outlier_mask
-
-            # separate into train/test
-            # ndvi_train = ndvi[:, train_indices]
-            # doy_train = doy[:, train_indices]
-            # nan_mask_train = nan_mask[:, train_indices]
+            nan_mask = nan_mask | outlier_mask | snow_mask
 
             doy = torch.from_numpy(ds.doy).to(device)
 
@@ -155,11 +140,11 @@ def train(name, data_path, features=None):
             feat_species = feat[:, ds.mapping_features["tree_species"]].int()
             feat_habitat = feat[:, ds.mapping_features["habitat"]]
 
-            # standardize input
-            feat_num = (feat_num - means_pt) / stds_pt
-
             feat_num[feat_num == -9999] = 0
             feat_species[feat_species == 255] = 17
+
+            # standardize input
+            feat_num = (feat_num - means_pt) / stds_pt
 
             feat_num = feat_num.to(device, non_blocking=True)
             feat_species = feat_species.to(device, non_blocking=True)
@@ -210,7 +195,7 @@ def train(name, data_path, features=None):
             endu = double_logistic_function(t_end, paramsu)
             periodic_loss_u = torch.mean((startu - endu) ** 2)
 
-            lambda_periodic = 0.01
+            lambda_periodic = 0.1
 
             loss = lossl + lossu + lambda_periodic * (periodic_loss_l + periodic_loss_u)
 
@@ -320,12 +305,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-path",
         type=str,
-        default="/data_2/scratch/sbiegel/processed/ndvi_dataset.zarr",
+        default="/data_2/scratch/sbiegel/processed/ndvi_dataset_temporal.zarr",
     )
     parser.add_argument(
         "--features",
         type=str,
-        default="dem,slope,easting,northing,twi,tri,mean_curv,profile_curv,plan_curv,roughness,median_forest_height,tree_species,habitat",
+        default="dem,slope,easting,northing,twi,tri,mean_curv,profile_curv,plan_curv,roughness,median_forest_height,forest_mix_rate,tree_species,habitat",
     )
     args = parser.parse_args()
 

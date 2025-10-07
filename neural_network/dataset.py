@@ -17,6 +17,7 @@ MEANS = {
     "tri": 2.885868787765503,
     "roughness": 2.9208521842956543,
     "median_forest_height": 24.493475,
+    "forest_mix_rate": 0.2507593148494662,
 }
 STDS = {
     "dem": 450.6628112792969,
@@ -30,6 +31,7 @@ STDS = {
     "tri": 2.302125930786133,
     "roughness": 2.2183449268341064,
     "median_forest_height": 6.8817625,
+    "forest_mix_rate": 0.6688715032184841,
 }
 
 
@@ -47,6 +49,7 @@ class ZarrDataset:
         "plan_curv",
         "roughness",
         "median_forest_height",
+        "forest_mix_rate",
         "tree_species",
         "habitat",
     ]
@@ -59,6 +62,7 @@ class ZarrDataset:
         self.mapping_features = zarr_store['merged_features'].attrs["feature_columns"]
 
         self.ndvi = zarr_store['ndvi']
+        self.ndsi = zarr_store['ndsi']
         self.dataset_len = self.ndvi.shape[0]
 
         dates = zarr_store['dates'][:]
@@ -78,8 +82,9 @@ class ZarrDataset:
 
     def __getitem__(self, idx):
         ndvi = torch.from_numpy(self.ndvi[idx]).float()
+        ndsi = torch.from_numpy(self.ndsi[idx]).float()
         features = torch.from_numpy(self.feat_array[idx]).float()
-        return ndvi, features
+        return ndvi, ndsi, features
 
     def __len__(self):
         return self.dataset_len
