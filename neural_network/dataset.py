@@ -64,11 +64,14 @@ class ZarrDataset:
         self.ndvi = zarr_store['ndvi']
         self.ndsi = zarr_store['ndsi']
         self.dataset_len = self.ndvi.shape[0]
+        self.timesteps = self.ndvi.shape[1]
 
         dates = zarr_store['dates'][:]
         self.dates = pd.to_datetime([d.decode('utf-8') for d in dates])
-        normalized = self.dates.map(lambda d: d.replace(year=2001))
-        self.doy = normalized.dayofyear.values - 1
+        dtindex = pd.DatetimeIndex(self.dates)
+        self.doy = dtindex.dayofyear.to_numpy()
+        is_leap = dtindex.is_leap_year.astype(int)
+        self.t = (self.doy - 1) / (365 + is_leap)
 
         self.num_features = [
             f for f in self.features if f not in ['tree_species', 'habitat']
@@ -81,8 +84,8 @@ class ZarrDataset:
         self.missingness = zarr_store['missingness'][:]
 
     def __getitem__(self, idx):
-        ndvi = torch.from_numpy(self.ndvi[idx]).float()
-        ndsi = torch.from_numpy(self.ndsi[idx]).float()
+        ndvi = torch.from_numpy(self.ndvi[idx])
+        ndsi = torch.from_numpy(self.ndsi[idx])
         features = torch.from_numpy(self.feat_array[idx]).float()
         return ndvi, ndsi, features
 

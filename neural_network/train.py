@@ -134,14 +134,12 @@ def train(name, data_path, features=None):
             outlier_mask = (ndvi > 1) | (ndvi < -0.1)
             nan_mask = nan_mask | outlier_mask | snow_mask
 
-            doy = torch.from_numpy(ds.doy).to(device)
+            t = torch.from_numpy(ds.t).to(device, non_blocking=True)
 
             feat_num = feat[:, ds.num_feature_indices]
             feat_species = feat[:, ds.mapping_features["tree_species"]].int()
-            feat_habitat = feat[:, ds.mapping_features["habitat"]]
-
-            feat_num[feat_num == -9999] = 0
-            feat_species[feat_species == 255] = 17
+            feat_habitat = feat[:, ds.mapping_features["habitat"]].int()
+            feat_species[feat_species == 255] = 16
 
             # standardize input
             feat_num = (feat_num - means_pt) / stds_pt
@@ -169,7 +167,7 @@ def train(name, data_path, features=None):
 
             lossl = objective_pinball(
                 paramsl,
-                doy * T_SCALE,
+                    t,
                 t_ndvi_train,
                 t_nan_mask_train,
                 alpha=0.25,
@@ -177,7 +175,7 @@ def train(name, data_path, features=None):
             )
             lossu = objective_pinball(
                 paramsu,
-                doy * T_SCALE,
+                    t,
                 t_ndvi_train,
                 t_nan_mask_train,
                 alpha=0.75,
@@ -185,8 +183,8 @@ def train(name, data_path, features=None):
             )
 
             # Add constraint to ensure periodicity
-            t_start = torch.full((feat.shape[0], 1), 1.0 * T_SCALE, device=device)
-            t_end   = torch.full((feat.shape[0], 1), 365.0 * T_SCALE, device=device)
+                t_start = torch.full((feat.shape[0], 1), 0, device=device)
+                t_end   = torch.full((feat.shape[0], 1), 1, device=device)
             startl = double_logistic_function(t_start, paramsl)
             endl = double_logistic_function(t_end, paramsl)
             periodic_loss_l = torch.mean((startl - endl) ** 2)

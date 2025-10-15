@@ -1,36 +1,13 @@
 import argparse
-import numpy as np
-import glob
 import torch
 import torch.nn as nn
-import xarray as xr
-import os
 import zarr
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-import time
 
 from neural_network.mlp import MLPWithEmbeddings
 from neural_network.train import (
-    double_logistic_function,
     MEANS,
     STDS,
-    T_SCALE,
-)
-from neural_network.helpers import (
-    get_doy,
-    check_missing_timestamps,
-    create_reference_raster,
-    project_patch,
-    consolidate,
-    get_dates,
-    convert_params,
-    get_split_indices,
-    NUM_DATAPOINTS_PER_YEAR,
-    START_YEAR,
-    END_YEAR,
-    H,
-    W,
 )
 from neural_network.dataset import ZarrDataset
 
@@ -113,7 +90,7 @@ def inference(encoder_path, features, name):
         n_habitats=nr_habitats,
         habitat_emb_dim=8,
     ).to(device)
-    encoder.load_state_dict(torch.load(encoder_path, weights_only=True))
+    encoder.load_state_dict(torch.load(encoder_path))
     encoder.eval()
 
     means_pt = torch.tensor([MEANS[f] for f in ds.num_features]).to(device).unsqueeze(0)
@@ -122,7 +99,6 @@ def inference(encoder_path, features, name):
     num_columns = [column for feat_name in ds.num_features for column in ds.mapping_features[feat_name]]
     species_columns = ds.mapping_features["tree_species"]
     habitat_columns = ds.mapping_features["habitat"]
-
     
     N = ds.dataset_len
     print(f"Number of samples: {N}")
@@ -130,7 +106,7 @@ def inference(encoder_path, features, name):
     root = zarr.open_group(out_zarr, mode='a')
     if "params" in root:
         del root["params"]
-    feat_grp = root.require_group('params')
+    feat_grp = root.create_group('params')
 
     feat_grp.create_array(
         name="params_lower",
@@ -160,7 +136,7 @@ def inference(encoder_path, features, name):
     feat_grp["params_upper"].attrs["description"] = "Upper bound parameters of the seasonal NDVI cycle.\n" + description
     feat_grp.attrs["encoder_path"] = encoder_path
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for slc in tqdm(chunk_iterator(ds.feat_array, 4000), total=(N + 4000 - 1) // 4000):
             feat = torch.from_numpy(ds.feat_array[slc, :]).to(device).float()
 
@@ -169,8 +145,7 @@ def inference(encoder_path, features, name):
             feat_species = feat[:, species_columns].int()
             feat_habitat = feat[:, habitat_columns]
 
-            feat_num[feat_num == -9999] = 0
-            feat_species[feat_species == 255] = 17
+            feat_species[feat_species == 255] = 16
 
             # standardize input
             feat_num = (feat_num - means_pt) / stds_pt
