@@ -5,20 +5,13 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data import DataLoader, RandomSampler, BatchSampler
+from torch.utils.data import DataLoader, RandomSampler
 from sklearn.metrics import d2_pinball_score
 from tqdm import tqdm
 from datetime import datetime
 
 from neural_network.mlp import MLPWithEmbeddings
-from neural_network.helpers import get_split_indices
-from neural_network.dataset import ZarrDataset, MEANS, STDS
-
-
-# YEARS_IN_TRAIN = [2017, 2018, 2019, 2020, 2021, 2022]
-# YEARS_IN_TEST = [2023]
-T_SCALE = 1.0 / 365.0  # rescale target
-
+from neural_network.dataset import ChunkedZarrDataset, MEANS, STDS
 
 def double_logistic_function(t, params):
     sos, mat_minus_sos, sen, eos_minus_sen, M, m = torch.split(params, 1, dim=1)
@@ -43,19 +36,20 @@ def objective_pinball(params, t, ndvi, nan_mask, alpha=0.5, weights=None):
     return torch.mean(loss[~nan_mask])
 
 
-def train(name, data_path, features=None):
+def train(name, data_path, features=None, model_type='logistic'):
     torch.manual_seed(1)
 
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    writer = SummaryWriter(log_dir=f"/data_2/scratch/sbiegel/processed/runs/{name}/{run_id}")
-    checkpoint_dir = f"/data_2/scratch/sbiegel/processed/checkpoints/{name}/{run_id}"
+    writer = SummaryWriter(log_dir=f"/data_2/scratch/sbiegel/processed/runs/{name}/{model_type}/{run_id}")
+    checkpoint_dir = f"/data_2/scratch/sbiegel/processed/checkpoints/{name}/{model_type}/{run_id}"
     os.makedirs(checkpoint_dir, exist_ok=True)
+    print(f"Writing logs to {checkpoint_dir}")
+    print(f"Run directory: {writer.log_dir}")
 
-    max_iterations = 500000
-    max_batches_per_epoch = 10000
-    lr = 0.001
+    num_epochs = 20
+    lr = 0.005
     lr_decay_rate = 0.01
-    batch_size = 512
+    batch_size = 1024
     device = "cuda"
 
     print("Starting model with:")
@@ -64,23 +58,28 @@ def train(name, data_path, features=None):
     print("Loading dataset...")
     if isinstance(features, str):
         features = features.split(",")
-    ds = ZarrDataset(data_path, features)
+    print("Using features: {}".format(ds.features))
+
+    ds = ChunkedZarrDataset(
+        data_path,
+        features,
+        batch_size=batch_size,
+        chunk_size=8192,
+        shuffle_chunks=True,
+        seed=42,
+    )
     missingness = ds.missingness
     missingness = torch.from_numpy(missingness).to(device)
-
-    sampler = RandomSampler(ds, replacement=True, num_samples=batch_size * max_batches_per_epoch)
-
+    t = torch.from_numpy(ds.t).float().to(device)
+    
     loader = DataLoader(
         ds,
-        batch_size=batch_size,
-        sampler=sampler,
-        drop_last=True,
-        num_workers=32,
+        batch_size=None,
+        num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
         persistent_workers=True,
     )
-
-    print("Using features: {}".format(ds.features))
 
     means_pt = torch.tensor([MEANS[f] for f in ds.num_features]).unsqueeze(0)
     stds_pt = torch.tensor([STDS[f] for f in ds.num_features]).unsqueeze(0)
@@ -89,10 +88,12 @@ def train(name, data_path, features=None):
     nr_species = ds.nr_tree_species
     nr_habitats = ds.nr_habitats
 
+    d_out=18
+
     # this model has ~475k parameters
     encoder = MLPWithEmbeddings(
         d_num=nr_num_features,
-        d_out=8,
+        d_out=d_out,
         n_blocks=8,
         d_block=256,
         dropout=0.0,
@@ -103,38 +104,31 @@ def train(name, data_path, features=None):
         habitat_emb_dim=8,
     ).to(device)
 
-    bias_params = [p for name, p in encoder.named_parameters() if "bias" in name]
-    others = [p for name, p in encoder.named_parameters() if "bias" not in name]
-    optimizer = torch.optim.AdamW(
-        [{"params": others}, {"params": bias_params, "weight_decay": 0}],
-        weight_decay=1e-4,
-        lr=lr,
-    )
+    optimizer = torch.optim.AdamW(encoder.parameters(), lr=lr, weight_decay=1e-4)
 
     print(
         "Number of parameters: {}".format(
             sum(p.numel() for p in encoder.parameters() if p.requires_grad)
         )
     )
+
+    NC_GRID_SIZE = 32
+    t_grid = torch.linspace(0, 1.0, NC_GRID_SIZE, device=device).unsqueeze(0)
+
     print("Starting training...")
 
     n_iterations = 0
-    n_epochs = 0
-    stop = False
-    while True:
-        print("Starting epoch {}".format(n_epochs + 1))
-
-        for sample in tqdm(loader):
-            ndvi, ndsi, feat = sample
+    total_iterations = num_epochs * ds.n_batches
+    for epoch in range(num_epochs):
+        ds.set_epoch(epoch)
+        print(f"Starting epoch {epoch + 1}")
+        for sample in tqdm(loader, total=len(loader)):
+            ndvi, feat = sample
 
             nan_mask = torch.isnan(ndvi) | (ndvi == -2**15) | (ndvi == 2**15 - 1)
             ndvi = ndvi.float() / 10000.0
-            ndsi = ndsi.float() / 10000.0
-            snow_mask = (ndsi > 0.43) & (ndsi < 1.0)
             outlier_mask = (ndvi > 1) | (ndvi < -0.1)
-            nan_mask = nan_mask | outlier_mask | snow_mask
-
-            t = torch.from_numpy(ds.t).to(device, non_blocking=True)
+            nan_mask = nan_mask | outlier_mask
 
             feat_num = feat[:, ds.num_feature_indices]
             feat_species = feat[:, ds.mapping_features["tree_species"]].int()
@@ -156,26 +150,30 @@ def train(name, data_path, features=None):
                 feat_species,
                 feat_habitat,
             )
-            paramsl = preds[:, [0, 1, 2, 3, 4, 5]]  # B x 6
-            paramsu = torch.cat(
-                [
-                    preds[:, [0, 1, 2, 3]],
-                    preds[:, [4, 5]] + nn.functional.softplus(preds[:, [6, 7]]),
-                ],
-                axis=1,
-            )
+
+            paramsl = preds[:, [0, 1, 2, 3, 4, 5]]
+            paramsm = preds[:, [6, 7, 8, 9, 10, 11]]
+            paramsu = preds[:, [12, 13, 14, 15, 16, 17]]
 
             lossl = objective_pinball(
                 paramsl,
-                    t,
+                t,
                 t_ndvi_train,
                 t_nan_mask_train,
                 alpha=0.25,
                 weights=missingness,
             )
+            lossm = objective_pinball(
+                paramsm,
+                t,
+                t_ndvi_train,
+                t_nan_mask_train,
+                alpha=0.50,
+                weights=missingness,
+            )
             lossu = objective_pinball(
                 paramsu,
-                    t,
+                t,
                 t_ndvi_train,
                 t_nan_mask_train,
                 alpha=0.75,
@@ -183,85 +181,119 @@ def train(name, data_path, features=None):
             )
 
             # Add constraint to ensure periodicity
-                t_start = torch.full((feat.shape[0], 1), 0, device=device)
-                t_end   = torch.full((feat.shape[0], 1), 1, device=device)
+            t_start = torch.full((feat.shape[0], 1), 0, device=device)
+            t_end   = torch.full((feat.shape[0], 1), 1, device=device)
             startl = double_logistic_function(t_start, paramsl)
             endl = double_logistic_function(t_end, paramsl)
             periodic_loss_l = torch.mean((startl - endl) ** 2)
-
+            startm = double_logistic_function(t_start, paramsm)
+            endm = double_logistic_function(t_end, paramsm)
+            periodic_loss_m = torch.mean((startm - endm) ** 2)
             startu = double_logistic_function(t_start, paramsu)
             endu = double_logistic_function(t_end, paramsu)
             periodic_loss_u = torch.mean((startu - endu) ** 2)
+            total_periodic_loss = periodic_loss_l + periodic_loss_m + periodic_loss_u
 
-            lambda_periodic = 0.1
+            lambda_periodic = 1
 
-            loss = lossl + lossu + lambda_periodic * (periodic_loss_l + periodic_loss_u)
+            t_grid_b = t_grid.repeat(paramsl.shape[0], 1)
+
+            ndvi_lower_grid = double_logistic_function(t_grid_b, paramsl)
+            ndvi_middle_grid = double_logistic_function(t_grid_b, paramsm)
+            ndvi_upper_grid = double_logistic_function(t_grid_b, paramsu)
+            violation_lu = torch.relu(ndvi_lower_grid - ndvi_upper_grid)
+            violation_lm = torch.relu(ndvi_lower_grid - ndvi_middle_grid)
+            violation_mu = torch.relu(ndvi_middle_grid - ndvi_upper_grid)
+            violation = violation_lu + violation_lm + violation_mu
+            per_sample_noncross = violation.mean(dim=1)
+            total_noncross = per_sample_noncross.mean()
+
+            lambda_nc = 10.0
+
+            loss = lossl + lossm + lossu + lambda_periodic * total_periodic_loss + lambda_nc * total_noncross
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            new_lrate = lr * (lr_decay_rate ** (n_iterations / max_iterations))
+            new_lrate = lr * (lr_decay_rate ** (n_iterations / total_iterations))
             for param_group in optimizer.param_groups:
                 param_group["lr"] = new_lrate
 
-            if (n_iterations + 1) % 500 == 0:
-                writer.add_scalar("Loss/train", loss, n_iterations)
+            if (n_iterations + 1) % 10 == 0:
+                writer.add_scalar("Loss/train", loss, n_iterations+1)
                 for pi, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar(
                         "LearningRate[{}]".format(pi), param_group["lr"], n_iterations
                     )
 
-            if (n_iterations + 1) % 500 == 0:
+            if (n_iterations + 1) % 100 == 0:
                 with torch.no_grad():
                     fig, ax = plt.subplots(2, 2, figsize=(15, 6), sharey=True)
 
                     t_fit = (
-                        torch.linspace(0, 365, 1000)
+                        torch.linspace(0, 1, 1000)
                         .unsqueeze(0)
                         .repeat(paramsl.shape[0], 1)
                     )
                     ndvi_lower = double_logistic_function(
-                        t_fit * T_SCALE, paramsl.cpu()
+                        t_fit, paramsl.cpu()
+                    )
+                    ndvi_middle = double_logistic_function(
+                        t_fit, paramsm.cpu()
                     )
                     ndvi_upper = double_logistic_function(
-                        t_fit * T_SCALE, paramsu.cpu()
+                        t_fit, paramsu.cpu()
                     )
 
                     random_indices = np.random.choice(
-                        np.arange(batch_size), size=4, replace=False
+                        np.arange(paramsl.shape[0]), size=4, replace=False
                     )
                     for pl_idx, bi in enumerate(random_indices):
                         row, col = divmod(pl_idx, 2)
+
                         masked_ndvi_train = ndvi[bi][~nan_mask[bi]]
-                        doy_expanded = doy.unsqueeze(0).expand(nan_mask.shape[0], -1).cpu()
-                        masked_doy_train = doy_expanded[bi][~nan_mask[bi]].cpu()
-                        ax[row, col].scatter(
-                            masked_doy_train, masked_ndvi_train, label="Observed NDVI"
-                        )
+
+                        # Convert fractional year (t) back to day-of-year for plotting
+                        doy_array = (ds.t * 365).astype(np.float32)
+                        masked_doy_train = doy_array[~nan_mask[bi]]
+
+                        ax[row, col].scatter(masked_doy_train, masked_ndvi_train, label="Observed NDVI")
                         ax[row, col].fill_between(
-                            t_fit[bi],
+                            (t_fit * 365)[bi],
                             ndvi_lower[bi],
-                            ndvi_upper[bi],
+                            ndvi_middle[bi],
                             alpha=0.2,
                             color="red",
                         )
+
+                        ax[row, col].fill_between(
+                            (t_fit * 365)[bi],
+                            ndvi_middle[bi],
+                            ndvi_upper[bi],
+                            alpha=0.2,
+                            color="green",
+                        )
+                        ax[row, col].set_xlim(0, 365)
+                        ax[row, col].set_xlabel("Day of year")
                         ax[0, 0].set_ylabel("NDVI")
                         ax[1, 0].set_ylabel("NDVI")
 
                     writer.add_figure(f"Fit/iter_{n_iterations+1}", fig, n_iterations)
 
-                    all_ndvi_lower = double_logistic_function(
-                        doy.cpu() * T_SCALE, paramsl.cpu()
-                    )
-                    all_ndvi_upper = double_logistic_function(
-                        doy.cpu() * T_SCALE, paramsu.cpu()
-                    )
-                    all_masked_ndvi_lower = all_ndvi_lower[~nan_mask]
-                    all_masked_ndvi_upper = all_ndvi_upper[~nan_mask]
-                    all_masked_ndvi_train = ndvi[~nan_mask]
+                    ndvi_lower = double_logistic_function(t.cpu(), paramsl.cpu())
+                    ndvi_middle = double_logistic_function(t.cpu(), paramsm.cpu())
+                    ndvi_upper = double_logistic_function(t.cpu(), paramsu.cpu())
+
+                    all_masked_ndvi_lower = ndvi_lower[~nan_mask].cpu()
+                    all_masked_ndvi_middle = ndvi_middle[~nan_mask].cpu()
+                    all_masked_ndvi_upper = ndvi_upper[~nan_mask].cpu()
+                    all_masked_ndvi_train = ndvi[~nan_mask].cpu()
                     d2_score_lower = d2_pinball_score(
                         all_masked_ndvi_train, all_masked_ndvi_lower, alpha=0.25
+                    )
+                    d2_score_middle = d2_pinball_score(
+                        all_masked_ndvi_train, all_masked_ndvi_middle, alpha=0.50
                     )
                     d2_score_upper = d2_pinball_score(
                         all_masked_ndvi_train, all_masked_ndvi_upper, alpha=0.75
@@ -271,22 +303,14 @@ def train(name, data_path, features=None):
                         "D2PinballScoreLower/train", d2_score_lower, n_iterations
                     )
                     writer.add_scalar(
+                        "D2PinballScoreMiddle/train", d2_score_middle, n_iterations
+                    )
+                    writer.add_scalar(
                         "D2PinballScoreUpper/train", d2_score_upper, n_iterations
                     )
-
-            if (n_iterations + 1) % 10000 == 0:
-                torch.save(encoder.state_dict(), f"{checkpoint_dir}/encoder_iter{n_iterations+1}.pt")
-
             n_iterations += 1
-            if n_iterations >= max_iterations:
-                stop = True
-                break
 
-        if stop:
-            break
-
-        n_epochs += 1
-        writer.add_scalar("Epochs", n_epochs, n_iterations)
+        torch.save(encoder.state_dict(), f"{checkpoint_dir}/encoder_epoch{epoch+1}.pt")
 
     torch.save(
         encoder.state_dict(),
@@ -303,13 +327,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-path",
         type=str,
-        default="/data_2/scratch/sbiegel/processed/ndvi_dataset_temporal.zarr",
+        default="/data_2/scratch/sbiegel/processed/ndvi_dataset_filtered_shuffled.zarr",
     )
     parser.add_argument(
         "--features",
         type=str,
         default="dem,slope,easting,northing,twi,tri,mean_curv,profile_curv,plan_curv,roughness,median_forest_height,forest_mix_rate,tree_species,habitat",
     )
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="logistic"
+    )
     args = parser.parse_args()
 
-    train(args.name, args.data_path, args.features)
+    train(args.name, args.data_path, args.features, args.model_type)

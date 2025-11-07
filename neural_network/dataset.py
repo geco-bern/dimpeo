@@ -2,7 +2,7 @@ import zarr
 import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, RandomSampler, BatchSampler
+from torch.utils.data import IterableDataset
 
 # rescale input (stats obtained from full dataset)
 MEANS = {
@@ -33,6 +33,108 @@ STDS = {
     "median_forest_height": 6.8817625,
     "forest_mix_rate": 0.6688715032184841,
 }
+
+
+class ChunkedZarrDataset(IterableDataset):
+    def __init__(
+        self,
+        file_path,
+        features=None,
+        batch_size=512,
+        chunk_size=8192,
+        shuffle_chunks=True,
+        seed=42,
+    ):
+        super().__init__()
+        self.file_path = file_path
+        self.features = features
+        self.batch_size = batch_size
+        self.chunk_size = chunk_size
+        self.shuffle_chunks = shuffle_chunks
+        self.base_seed = seed
+
+        store = zarr.open(file_path, mode="r", zarr_format=3)
+        original_store = zarr.open("/data_2/scratch/sbiegel/processed/ndvi_dataset_temporal.zarr", mode="r", zarr_format=3)
+        self.ndvi = store["ndvi"]
+        self.feat = store["merged_features"]
+        self.mapping_features = original_store["merged_features"].attrs["feature_columns"]
+        self.missingness = original_store["missingness"][:]
+        self.dates = np.array(
+            [pd.to_datetime(d.decode("utf-8")) for d in original_store["dates"][:]]
+        )
+        dtindex = pd.DatetimeIndex(self.dates)
+        self.doy = dtindex.dayofyear.to_numpy()
+        is_leap = dtindex.is_leap_year.astype(int)
+        self.t = (self.doy - 1) / (365 + is_leap)
+
+        self.dataset_len = self.ndvi.shape[0]
+        self.timesteps = self.ndvi.shape[1]
+        self.n_chunks = int(np.ceil(self.dataset_len / self.chunk_size))
+        self.num_features = [
+            f for f in self.features if f not in ['tree_species', 'habitat']
+        ]
+
+        # total number of minibatches per epoch
+        self.n_batches = int((self.dataset_len + self.batch_size - 1) // self.batch_size)
+        self.nr_num_features = len(self.num_features)
+        self.num_feature_indices = [i for f in self.num_features for i in self.mapping_features[f]]
+        self.nr_tree_species = 17
+        self.nr_habitats = 46
+
+    def set_epoch(self, epoch):
+        # allows reproducible per-epoch reshuffle
+        self.epoch = epoch
+        self.rng = np.random.default_rng(self.base_seed + epoch)
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if hasattr(self, "epoch"):
+            epoch = self.epoch
+        else:
+            epoch = 0
+
+        if worker_info is not None:
+            wid = worker_info.id
+            nworkers = worker_info.num_workers
+        else:
+            wid = 0
+            nworkers = 1
+        seed = self.base_seed + wid + epoch * 1000
+        self.rng = np.random.default_rng(seed)
+
+        store = zarr.open(self.file_path, mode="r", zarr_format=3)
+        self.ndvi = store["ndvi"]
+        self.feat = store["merged_features"]
+
+        chunk_indices = np.arange(self.n_chunks)
+        if self.shuffle_chunks:
+            self.rng.shuffle(chunk_indices)
+
+        chunk_indices = chunk_indices[wid::nworkers]
+
+        for cid in chunk_indices:
+            start = cid * self.chunk_size
+            stop = min((cid + 1) * self.chunk_size, self.dataset_len)
+
+            ndvi_chunk = np.asarray(self.ndvi[start:stop])
+            feat_chunk = np.asarray(self.feat[start:stop])
+
+            # local shuffle in memory
+            order = self.rng.permutation(len(ndvi_chunk))
+            ndvi_chunk = ndvi_chunk[order]
+            feat_chunk = feat_chunk[order]
+
+            for i in range(0, len(ndvi_chunk), self.batch_size):
+                j = min(i + self.batch_size, len(ndvi_chunk))
+                yield (
+                    torch.from_numpy(ndvi_chunk[i:j]).float(),
+                    torch.from_numpy(feat_chunk[i:j]).float(),
+                )
+
+    def __len__(self):
+        """Return total number of minibatches per epoch (across all chunks).
+        """
+        return self.n_batches
 
 
 class ZarrDataset:
@@ -78,7 +180,7 @@ class ZarrDataset:
         ]
         self.nr_num_features = len(self.num_features)
         self.num_feature_indices = [i for f in self.num_features for i in self.mapping_features[f]]
-        self.nr_tree_species = 18
+        self.nr_tree_species = 17
         self.nr_habitats = 46
 
         self.missingness = zarr_store['missingness'][:]
